@@ -1,25 +1,20 @@
 from tkinter import *
 from tkinter import messagebox
-from Services.auth import Auth
-from UI.ui_admin import open_admin
-from UI.ui_cashier import open_cashier
+from Services.auth import login
+from UI.router import go_admin, go_cashier
 
-auth_service = Auth()
 
-def login_ui(root, entry_username, entry_password):
+
+def login_ui(root, entry_username, entry_password, login_frame):
     username = entry_username.get().strip()
     password = entry_password.get().strip()
 
-    success, role = auth_service.login(username, password)
+    success, role = login(username, password)
 
-    if not success:
-        messagebox.showerror("خطأ", "اسم المستخدم أو كلمة المرور غير صحيحة")
-        return
+    if success:
+        login_frame.destroy()
 
-    messagebox.showinfo("نجاح", f"تم تسجيل الدخول كـ {role}")
-    root.destroy()
-
-    if role == "Admin":
-        open_admin()
-    else:
-        open_cashier(username)
+        if role == "Admin":
+            go_admin(root)
+        else:
+            go_cashier(root, username)
