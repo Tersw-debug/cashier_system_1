@@ -6,34 +6,20 @@ from Domain.cart import Cart
 from Domain.sale import Sale
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
+import customtkinter
+from UI.router import go_login
 
-def open_cashier(username):
-        win = Tk()
-        win.title("Cashier")
-        width = win.winfo_screenwidth()
-        height = win.winfo_screenheight()
-        win.geometry("%dx%d" % (width,height))
-        menu = tk.Menu(win)
-        win.config(menu=menu)
-                
-        filemenu = tk.Menu(menu)
-        menu.add_cascade(label="File", menu=filemenu)
-        filemenu.add_command(label='New')
-        filemenu.add_command(label="Open...")
-        filemenu.add_separator()
-        filemenu.add_command(label="Exit", command=menu.quit)
-        helpmenu = tk.Menu(menu)
-        menu.add_cascade(label="Help", menu=helpmenu)
-        helpmenu.add_command(label="About")
+def open_cashier(root,username):
+        
 
-
-
+        frame = Frame(root)
+        frame.pack(fill=BOTH, expand=True)
         cart = Cart()
 
-        lst = Listbox(win, width=80)
+        lst = Listbox(frame, width=80)
         lst.pack()
 
-        e = Entry(win)
+        e = Entry(frame)
         e.pack()
 
         def add():
@@ -56,6 +42,33 @@ def open_cashier(username):
             cart.clear()
             lst.delete(0, END)
 
-        Button(win, text="Add", command=add).pack()
-        Button(win, text="Checkout", command=checkout).pack()
-        win.mainloop()
+        Button(frame, text="Add", command=add).pack()
+        Button(frame, text="Checkout", command=checkout).pack()
+        bottom_frame = Frame(frame, bg='darkgreen')
+        bottom_frame.pack(side=BOTTOM, fill=X)
+
+        customtkinter.CTkButton(
+            bottom_frame,
+            text="X خروج",
+            command=root.destroy,
+            fg_color="red",
+            text_color="white",
+            width=140,
+            height=40,
+            font=("Arial", 18)
+        ).pack(side=LEFT, padx=7, pady=7)
+
+        customtkinter.CTkButton(
+            bottom_frame,
+            text="تبديل المستخدم",
+            command=lambda: [frame.destroy(), go_login(root)],
+            fg_color="lightblue",
+            text_color="black",
+            width=140,
+            height=40,
+            font=("Arial", 18)
+        ).pack(side=LEFT, padx=7, pady=7)
+
+
+
+        frame.mainloop()
