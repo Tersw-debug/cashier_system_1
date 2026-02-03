@@ -2,21 +2,46 @@ import sqlite3
 import os
 
 
-def migrate_db(databaseName):
-    conn = sqlite3.connect(databaseName)
-    cursor = conn.cursor()
-    
-    try:
-        # This command adds the 'total' column if it's missing
-        cursor.execute("ALTER TABLE products ADD COLUMN total REAL DEFAULT 0")
-        conn.commit()
-        print("Database updated successfully!")
-    except sqlite3.OperationalError:
 
-        print("Column 'total' already exists, skipping...")
-    
+def migrate_db(db_path):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+
+    # Enable FK support
+    c.execute("PRAGMA foreign_keys = ON")
+
+    # --- PRODUCTS MIGRATION ---
+    c.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='products'
+    """)
+    exists = c.fetchone()
+
+    if exists:
+        c.execute("ALTER TABLE products RENAME TO products_old")
+
+        c.execute("""
+            CREATE TABLE products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                name TEXT NOT NULL UNIQUE,
+                barcode TEXT UNIQUE,
+                sell_price REAL NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 0,
+                min_quantity INTEGER NOT NULL DEFAULT 5
+            )
+        """)
+
+        c.execute("""
+            INSERT INTO products (id, created_at, name, barcode, sell_price, quantity, min_quantity)
+            SELECT id, time, name, barcode, sell_price, quantity, 5
+            FROM products_old
+        """)
+
+        c.execute("DROP TABLE products_old")
+
+    conn.commit()
     conn.close()
-
 
 
 
@@ -29,47 +54,59 @@ class Database:
 
     @staticmethod
     def get_connection():
-        return sqlite3.connect(Database.DB_NAME)    
+        conn = sqlite3.connect(Database.DB_NAME)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
 
     @staticmethod
     def init_db():
         conn = Database.get_connection()
         c = conn.cursor()
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            time DATE NOT NULL,
-            name TEXT NOT NULL UNIQUE,
-            barcode TEXT UNIQUE,
-            sell_price REAL,
-            quantity INTEGER,
-            total INTEGER
-        )
-        ''')
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL
-        )
-        ''')
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            total REAL,
-            cashier TEXT
-        )
-        ''')
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS sale_items (
-            sale_id INTEGER,
-            product_id INTEGER,
-            qty INTEGER,
-            price REAL
-        )
-        ''')
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                name TEXT NOT NULL UNIQUE,
+                barcode TEXT UNIQUE,
+                sell_price REAL NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 0,
+                min_quantity INTEGER NOT NULL DEFAULT 5
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sales (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                cashier_id INTEGER NOT NULL,
+                total REAL NOT NULL,
+                FOREIGN KEY (cashier_id)
+                    REFERENCES users(id)
+                    ON DELETE RESTRICT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sale_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sale_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                qty INTEGER NOT NULL,
+                price REAL NOT NULL,
+                FOREIGN KEY (sale_id)
+                    REFERENCES sales(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (product_id)
+                    REFERENCES products(id)
+                    ON DELETE RESTRICT
+            )
+        """)
         conn.commit()
         conn.close()
 

@@ -1,6 +1,47 @@
 import customtkinter
 from tkinter import *
 
+
+
+
+
+class BaseWindow(customtkinter.CTk):
+    def __init__(self, title="System", fullscreen=True):
+        super().__init__()
+
+        self.title(title)
+        self.minsize(900, 600)
+
+        self._is_fullscreen = fullscreen
+
+        if fullscreen:
+            self.state("zoomed")   # Native maximize
+        else:
+            self.geometry("1100x700")
+
+        # Optional: keyboard shortcuts
+        self.bind("<Escape>", self.exit_fullscreen)
+        self.bind("<F11>", self.toggle_fullscreen)
+
+    # ---------- Window Controls ----------
+
+    def toggle_fullscreen(self, event=None):
+        self._is_fullscreen = not self._is_fullscreen
+        self.state("zoomed" if self._is_fullscreen else "normal")
+
+    def exit_fullscreen(self, event=None):
+        self._is_fullscreen = False
+        self.state("normal")
+
+
+
+
+
+
+
+
+
+"""
 class BaseWindow(customtkinter.CTk):
     def __init__(self, title_text="System"):
         super().__init__()
@@ -11,27 +52,27 @@ class BaseWindow(customtkinter.CTk):
         self.geometry("%dx%d" % (width, height))
         self.overrideredirect(True)
 
-        self.title_bar= Frame(self, bg='darkgreen')
+        self.title_bar= Frame(self, bg='black')
         self.title_bar.pack(side=TOP, fill=X)
 
                 
         self.title_label = Label(
             self.title_bar,
             text=f"  {title_text}",
-            bg="darkgreen",
+            bg="black",
             fg="white",
             font=("Arial", 12, "bold")
         )
         self.title_label.pack(side=LEFT, pady=5)
 
         
-        self.btn_frame = Frame(self.title_bar, bg="darkgreen")
+        self.btn_frame = Frame(self.title_bar, bg="black")
         self.btn_frame.pack(side=RIGHT)
 
         min_btn = Button(
             self.btn_frame,
             text=" — ",
-            bg="darkgreen",
+            bg="black",
             fg="white",
             bd=0,
             font=("Arial", 12),
@@ -43,7 +84,7 @@ class BaseWindow(customtkinter.CTk):
         max_btn = Button(
             self.btn_frame,
             text=" ☐ ",
-            bg="darkgreen",
+            bg="black",
             fg="white",
             bd=0,
             font=("Arial", 12),
@@ -109,3 +150,4 @@ class BaseWindow(customtkinter.CTk):
         self.geometry(f"+{x}+{y}")
 
 
+"""

@@ -2,10 +2,10 @@
 
 class Product:
 
-    def __init__(self, time,name, barcode,price,qty,total):
-        self.time = time
+    def __init__(self, created_at,name, barcode,price,qty,min_qty):
+        self.created_at = created_at
         self.name = name
         self.barcode = barcode
         self.price = price
         self.qty = qty
-        self.total = total
+        self.min_qty = min_qty
