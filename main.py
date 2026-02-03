@@ -10,6 +10,8 @@ Database.init_db()
 Database.add_default_users()
 
 
+
+
 root = BaseWindow("Log In")
 
 go_login(root)

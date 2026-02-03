@@ -1,24 +1,49 @@
 import sqlite3
+import os
+
+
+def migrate_db(databaseName):
+    conn = sqlite3.connect(databaseName)
+    cursor = conn.cursor()
+    
+    try:
+        # This command adds the 'total' column if it's missing
+        cursor.execute("ALTER TABLE products ADD COLUMN total REAL DEFAULT 0")
+        conn.commit()
+        print("Database updated successfully!")
+    except sqlite3.OperationalError:
+
+        print("Column 'total' already exists, skipping...")
+    
+    conn.close()
+
+
+
 
 class Database:
 
-    DB_NAME = "shop.db"
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DB_NAME = os.path.join(BASE_DIR, "shop.db")
+
+
 
     @staticmethod
     def get_connection():
         return sqlite3.connect(Database.DB_NAME)    
 
-
+    @staticmethod
     def init_db():
         conn = Database.get_connection()
         c = conn.cursor()
         c.execute('''
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            time DATE NOT NULL,
             name TEXT NOT NULL UNIQUE,
             barcode TEXT UNIQUE,
             sell_price REAL,
-            quantity INTEGER
+            quantity INTEGER,
+            total INTEGER
         )
         ''')
         c.execute('''
@@ -48,6 +73,7 @@ class Database:
         conn.commit()
         conn.close()
 
+    @staticmethod
     def add_default_users():
         conn = Database.get_connection()
         c = conn.cursor()
