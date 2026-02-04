@@ -36,6 +36,6 @@ def show_login(root):
     )
     loginButton.pack(pady=20)
 
-    frame.bind('<Return>', on_enter)
+    root.bind('<Return>', on_enter)
 
     return frame

@@ -5,7 +5,18 @@ import sqlite3
 def get_products():
     conn = Database.get_connection()
     c = conn.cursor()
-    c.execute(""" SELECT id, created_at, name, barcode, sell_price, quantity, min_quantity
+    c.execute(""" SELECT id, name, barcode, sell_price, quantity, min_quantity
+        FROM products""")
+    data = c.fetchall()
+    conn.close()
+    return data
+
+
+
+def get_products_storage():
+    conn = Database.get_connection()
+    c = conn.cursor()
+    c.execute(""" SELECT id,created_at ,name, barcode, sell_price, quantity, min_quantity
         FROM products""")
     data = c.fetchall()
     conn.close()
@@ -30,14 +41,34 @@ def add_product(created_at, name, barcode, price, qty, min_qty=5):
 
 
 
-def update_product(pid, name, barcode, price, qty, min_qty):
+def update_product_data(pid,name, barcode, price, qty, min_qty):
     conn = Database.get_connection()
     c = conn.cursor()
+
     c.execute("""
-        UPDATE products
-        SET name=?, barcode=?, sell_price=?, quantity=?, min_quantity=?
-        WHERE id=?
-    """, (name, barcode, price, qty, min_qty, pid))
+        SELECT barcode
+        FROM products
+        WHERE name = ?
+    """, (name,))
+    result = c.fetchone()
+
+    if not result:
+        conn.close()
+        raise ValueError("Product does not exist")
+
+    old_barcode = result[0]
+    if barcode and (barcode != old_barcode):
+        c.execute("""
+            UPDATE products
+            SET name=?, barcode=?, sell_price=?, quantity=?, min_quantity=?
+            WHERE id=?
+        """, (name, barcode, price, qty, min_qty, pid))
+    else:
+        c.execute("""
+            UPDATE products
+            SET name=?, sell_price=?, quantity=?, min_quantity=?
+            WHERE id=?
+        """, (name, price, qty, min_qty, pid))
     conn.commit()
     conn.close()
 
@@ -114,6 +145,7 @@ def get_product_price(name):
         return result[0]
     return None
 
+
 def get_product_by_name_or_barcode(name, barcode):
     conn = Database.get_connection()
     c = conn.cursor()
@@ -123,6 +155,7 @@ def get_product_by_name_or_barcode(name, barcode):
         WHERE name = ? OR barcode = ?
     """, (name, barcode))
     return c.fetchall()
+
 
 def get_number_of_products():
     conn = Database.get_connection()
