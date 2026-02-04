@@ -29,25 +29,27 @@ def getUsername(username_from_login):
 def open_add_product():
     win = Toplevel()
     win.title("إضافة صنف جديد")
-    win.geometry("500x600")
+    win.geometry("520x640")
     win.grab_set()
-    win.configure(bg="#3a4247")
 
-    win.grid_columnconfigure(0, weight=1)
-    win.grid_columnconfigure(1, weight=1)
+    appearance = customtkinter.get_appearance_mode()
+    bg_color = "#121212" if appearance == "Dark" else "#f4f6f8"
+    card_color = "#1e1e1e" if appearance == "Dark" else "#ffffff"
+    text_color = "#ffffff" if appearance == "Dark" else "#000000"
 
+    win.configure(bg=bg_color)
+
+    # ================= VARIABLES =================
     min_qty_var = StringVar()
     price_var = StringVar()
     qty_var = StringVar()
     total_var = StringVar(value="0.00")
 
-
+    # ================= HELPERS =================
     def calculate_total(*args):
         try:
-            price = float(price_var.get())
-            qty = int(qty_var.get())
-            total_var.set(f"{price * qty:.2f}")
-        except ValueError:
+            total_var.set(f"{float(price_var.get()) * int(qty_var.get()):.2f}")
+        except:
             total_var.set("0.00")
 
     def save():
@@ -58,8 +60,7 @@ def open_add_product():
         qty = qty_var.get().strip()
         min_qty = min_qty_var.get().strip()
 
-
-        if not all([created_at,name, barcode, price, qty, min_qty]):
+        if not all([created_at, name, barcode, price, qty, min_qty]):
             messagebox.showerror("خطأ", "جميع الحقول مطلوبة")
             return
 
@@ -71,9 +72,15 @@ def open_add_product():
             messagebox.showerror("خطأ", "السعر أو الكمية غير صحيحة")
             return
 
-        
-        product = Product(created_at,name, barcode, price, qty, min_qty)
-        add_product(product.created_at ,product.name, product.barcode, product.price, product.qty, product.min_qty)
+        product = Product(created_at, name, barcode, price, qty, min_qty)
+        add_product(
+            product.created_at,
+            product.name,
+            product.barcode,
+            product.price,
+            product.qty,
+            product.min_qty
+        )
 
         messagebox.showinfo("تم", "تم حفظ الصنف بنجاح")
         win.destroy()
@@ -84,218 +91,93 @@ def open_add_product():
             ret, frame = cap.read()
             if not ret:
                 break
-
             for barcode in decode(frame):
-                barcode_data = barcode.data.decode("utf-8")
                 barcodeEntry.delete(0, END)
-                barcodeEntry.insert(0, barcode_data)
-
+                barcodeEntry.insert(0, barcode.data.decode("utf-8"))
                 cap.release()
                 cv2.destroyAllWindows()
                 return
-            cv2.imshow("Scan Barcode - Press Q to cancel", frame)
+            cv2.imshow("Scan Barcode (Q to cancel)", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
         cap.release()
         cv2.destroyAllWindows()
 
-    customtkinter.CTkLabel(
+    # ================= CARD =================
+    card = customtkinter.CTkFrame(
         win,
-        text=" الوقت ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=0, column=1,sticky="ew" ,padx=5, pady=5)
-    dateEntry = customtkinter.CTkEntry(
-        win,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
+        fg_color=card_color,
+        corner_radius=18
     )
-    dateEntry.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+    card.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
+    card.grid_columnconfigure(0, weight=1)
+    card.grid_columnconfigure(1, weight=2)
 
+    def field(label, row, var=None, readonly=False):
+        customtkinter.CTkLabel(
+            card,
+            text=label,
+            anchor="e",
+            font=("Arial", 14),
+            text_color=text_color
+        ).grid(row=row, column=1, sticky="e", padx=10, pady=10)
+
+        entry = customtkinter.CTkEntry(
+            card,
+            textvariable=var,
+            height=42,
+            font=("Arial", 16),
+            justify="center",
+            state="readonly" if readonly else "normal"
+        )
+        entry.grid(row=row, column=0, sticky="ew", padx=10, pady=10)
+        return entry
+
+    # ================= FIELDS =================
+    dateEntry = field("الوقت", 0)
     dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    customtkinter.CTkLabel(
+    nameEntry = field("اسم الصنف", 1)
+    barcodeEntry = field("الباركود", 2)
+    priceEntry = field("السعر", 3, price_var)
+    qtyEntry = field("الكمية", 4, qty_var)
+    minQtyEntry = field("الحد الأدنى", 5, min_qty_var)
+    totalEntry = field("الإجمالي", 6, total_var, readonly=True)
+
+    # ================= FOOTER =================
+    footer = customtkinter.CTkFrame(
         win,
-        text="اسم الصنف",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=1, column=1,sticky="ew" ,padx=5, pady=5)
-    nameEntry = customtkinter.CTkEntry(
-        win,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
+        fg_color="transparent"
     )
-    nameEntry.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+    footer.pack(fill=X, padx=20, pady=(0, 20))
 
-
-    customtkinter.CTkLabel(
-        win,
-        text=" الباركود ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=2, column=1,sticky="ew" ,padx=5, pady=5)
-    barcodeEntry = customtkinter.CTkEntry(
-        win,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-    )
-    barcodeEntry.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        win,
-        text=" السعر ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=3, column=1,  sticky="ew", padx=5, pady=5)
-    
-    
-    priceEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=price_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-    )
-    priceEntry.grid(row=3, column=0,  sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        win,
-        text=" الكمية ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=4, column=1,  sticky="ew", padx=5, pady=5)
-    quantityEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=qty_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-        
-    )
-    quantityEntry.grid(row=4, column=0,  sticky="ew", padx=5, pady=5)
-    
-    
-    
-    customtkinter.CTkLabel(
-        win,
-        text=" الحد الادني ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=5, column=1,  sticky="ew", padx=5, pady=5)
-    minQuantityEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=min_qty_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-        
-    )
-    minQuantityEntry.grid(row=5, column=0,  sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        win,
-        text=" الاجمالي ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=6, column=1,  sticky="ew", padx=5, pady=5)
-    totalEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=total_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER,
-        state="readonly"
-        
-    )
-    totalEntry.grid(row=6, column=0,  sticky="ew", padx=5, pady=5)
-
-
-
-    bottom_Frame = Frame(win, bg="#3a4247")
-    bottom_Frame.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor=SE)
-
-
-    bottom_Frame.grid_columnconfigure(0, weight=1)
-    bottom_Frame.grid_columnconfigure(1, weight=1)
-    bottom_Frame.grid_columnconfigure(2, weight=1)
+    footer.grid_columnconfigure(0, weight=1)
+    footer.grid_columnconfigure(1, weight=1)
+    footer.grid_columnconfigure(2, weight=1)
 
     customtkinter.CTkButton(
-        bottom_Frame,
-        text='Scan',
-        corner_radius=4,
-        fg_color="#1f3b4d",
-        text_color='white',
-        width=120,
+        footer,
+        text="📷 Scan",
+        height=44,
+        font=("Arial", 14, "bold"),
+        fg_color="#2a7fff",
         command=scan
-    ).grid(row=0, column=1, padx=5, pady=5)
-
+    ).grid(row=0, column=1, padx=5, sticky="ew")
 
     customtkinter.CTkButton(
-        bottom_Frame,
-        text='Save',
-        corner_radius=4,
-        fg_color="green",
-        text_color='white',
-        width=120,
+        footer,
+        text="💾 Save",
+        height=44,
+        font=("Arial", 14, "bold"),
+        fg_color="#22c55e",
         command=save
-    ).grid(row=0, column=2, padx=5, pady=5)
+    ).grid(row=0, column=2, padx=5, sticky="ew")
 
-
+    # ================= TRACES =================
     price_var.trace_add("write", calculate_total)
     qty_var.trace_add("write", calculate_total)
+
 
 
 
