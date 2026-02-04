@@ -12,12 +12,26 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 import arabic_reshaper
 from bidi.algorithm import get_display
+from PIL import Image
+import os
+import re
 
-customtkinter.set_appearance_mode("dark")
 
 def ar(text):
     reshaped = arabic_reshaper.reshape(str(text))
     return get_display(reshaped)
+
+
+def rtl_safe(text):
+    text = str(text)
+
+    # If text contains Arabic letters → reshape
+    if re.search(r'[\u0600-\u06FF]', text):
+        return ar(text)
+
+    # Otherwise (English / numbers) → leave as-is
+    return text
+
 
 username = ""
 
@@ -31,7 +45,8 @@ def open_add_product():
     win.title("إضافة صنف جديد")
     win.geometry("520x640")
     win.grab_set()
-
+    
+    
     appearance = customtkinter.get_appearance_mode()
     bg_color = "#121212" if appearance == "Dark" else "#f4f6f8"
     card_color = "#1e1e1e" if appearance == "Dark" else "#ffffff"
@@ -119,7 +134,7 @@ def open_add_product():
             card,
             text=label,
             anchor="e",
-            font=("Arial", 14),
+            font=("Arial", 20),
             text_color=text_color
         ).grid(row=row, column=1, sticky="e", padx=10, pady=10)
 
@@ -127,7 +142,7 @@ def open_add_product():
             card,
             textvariable=var,
             height=42,
-            font=("Arial", 16),
+            font=("Arial", 22),
             justify="center",
             state="readonly" if readonly else "normal"
         )
@@ -158,18 +173,18 @@ def open_add_product():
 
     customtkinter.CTkButton(
         footer,
-        text="📷 Scan",
+        text="📷 امسح الباركود",
         height=44,
-        font=("Arial", 14, "bold"),
+        font=("Arial", 20, "bold"),
         fg_color="#2a7fff",
         command=scan
     ).grid(row=0, column=1, padx=5, sticky="ew")
 
     customtkinter.CTkButton(
         footer,
-        text="💾 Save",
+        text="💾 حفظ",
         height=44,
-        font=("Arial", 14, "bold"),
+        font=("Arial", 20, "bold"),
         fg_color="#22c55e",
         command=save
     ).grid(row=0, column=2, padx=5, sticky="ew")
@@ -187,7 +202,12 @@ def open_add_to_storage():
     win.title("إضافة الي المخزن")
     win.geometry("500x600")
     win.grab_set()
-    win.configure(bg="#3a4247")
+    appearance = customtkinter.get_appearance_mode()
+    bg_color = "#121212" if appearance == "Dark" else "#f4f6f8"
+    card_color = "#1e1e1e" if appearance == "Dark" else "#ffffff"
+    text_color = "#ffffff" if appearance == "Dark" else "#000000"
+
+    win.configure(bg=bg_color)
 
     win.grid_columnconfigure(0, weight=1)
     win.grid_columnconfigure(1, weight=1)
@@ -196,6 +216,7 @@ def open_add_to_storage():
     qty_var = StringVar()
     total_var = StringVar(value="0.00")
     min_qty_var = StringVar()
+    value_inside = customtkinter.StringVar(win)
 
     def setPrice(*args):
         try:
@@ -268,208 +289,97 @@ def open_add_to_storage():
         cap.release()
         cv2.destroyAllWindows()
 
-    customtkinter.CTkLabel(
+    card = customtkinter.CTkFrame(
         win,
-        text=" الوقت ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=0, column=1,sticky="ew" ,padx=5, pady=5)
-    dateEntry = customtkinter.CTkEntry(
-        win,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
+        fg_color=card_color,
+        corner_radius=18
     )
-    dateEntry.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+    card.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
+    card.grid_columnconfigure(0, weight=1)
+    card.grid_columnconfigure(1, weight=2)
 
-    dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    def field(label, row, var=None, readonly=False):
+        customtkinter.CTkLabel(
+            card,
+            text=label,
+            anchor="e",
+            font=("Arial", 20),
+            text_color=text_color
+        ).grid(row=row, column=1, sticky="e", padx=10, pady=10)
+
+        entry = customtkinter.CTkEntry(
+            card,
+            textvariable=var,
+            height=42,
+            font=("Arial", 22),
+            justify="center",
+            corner_radius=8,
+            state="readonly" if readonly else "normal"
+        )
+        entry.grid(row=row, column=0, sticky="ew", padx=10, pady=10)
+        return entry
+
+    
 
     option_list = get_number_of_products()
+    dateEntry = field("الوقت", 0)
+    dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
     customtkinter.CTkLabel(
-        win,
+        card,
         text=" اختر الصنف ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=1, column=1,sticky="ew" ,padx=5, pady=5)
+        anchor="e",
+        font=("Arial", 20),
+        text_color=text_color
+    ).grid(row=1, column=1,sticky="ew" ,padx=10, pady=10)
 
-    value_inside = customtkinter.StringVar(win)
+    
 
     value_inside.set("اختر صنف")
 
-    optionMenu =  customtkinter.CTkOptionMenu(
-        win,
+    optionMenu = customtkinter.CTkOptionMenu(
+        card,
         variable=value_inside,
         values=option_list,
-        width=150,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        anchor=CENTER,
+        height=42,
+        font=("Arial", 22),
+        anchor="center",
         corner_radius=8,
-        font=("Arial", 14)
     )
-    optionMenu.grid(row=1, column=0,sticky="ew" ,padx=5, pady=5)
+    optionMenu.grid(row=1, column=0,sticky="ew" ,padx=10, pady=10)
 
-    customtkinter.CTkLabel(
-        win,
-        text=" الباركود ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=2, column=1,sticky="ew" ,padx=5, pady=5)
-    barcodeEntry = customtkinter.CTkEntry(
-        win,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-    )
-    barcodeEntry.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        win,
-        text=" السعر ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=3, column=1,  sticky="ew", padx=5, pady=5)
-    
-    
-    priceEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=price_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-    )
-    priceEntry.grid(row=3, column=0,  sticky="ew", padx=5, pady=5)
+    barcodeEntry = field("الباركود", 2)
+    priceEntry = field("السعر", 3, price_var)
+    qtyEntry = field("الكمية", 4, qty_var)
+    minQtyEntry = field("الحد الأدنى", 5, min_qty_var)
+    totalEntry = field("الإجمالي", 6, total_var, readonly=True)
 
 
-    
+    footer = customtkinter.CTkFrame(win, fg_color="transparent")
+    footer.pack(fill=X, padx=20, pady=(0, 20))
 
-    customtkinter.CTkLabel(
-        win,
-        text=" الكمية ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=4, column=1,  sticky="ew", padx=5, pady=5)
-    quantityEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=qty_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-        
-    )
-    quantityEntry.grid(row=4, column=0,  sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        win,
-        text=" الحد الادني ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=5, column=1,  sticky="ew", padx=5, pady=5)
-    minQuantityEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=min_qty_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER
-        
-    )
-    minQuantityEntry.grid(row=5, column=0,  sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        win,
-        text=" الاجمالي ",
-        width=150,
-        height=50,
-        fg_color='#1f3b4d',
-        text_color='white',
-        corner_radius=8,
-        font=("Arial", 14)
-    ).grid(row=6, column=1,  sticky="ew", padx=5, pady=5)
-    totalEntry = customtkinter.CTkEntry(
-        win,
-        textvariable=total_var,
-        font=("Arial", 20),
-        width=250,
-        height=50,
-        fg_color="white",
-        text_color='black',
-        justify=CENTER,
-        state="readonly"
-        
-    )
-    totalEntry.grid(row=6, column=0,  sticky="ew", padx=5, pady=5)
-
-
-    bottom_Frame = Frame(win, bg="#3a4247")
-    bottom_Frame.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor=SE)
-
-
-    bottom_Frame.grid_columnconfigure(0, weight=1)
-    bottom_Frame.grid_columnconfigure(1, weight=1)
-    bottom_Frame.grid_columnconfigure(2, weight=1)
+    footer.grid_columnconfigure(0, weight=1)
+    footer.grid_columnconfigure(1, weight=1)
+    footer.grid_columnconfigure(2, weight=1)
 
     customtkinter.CTkButton(
-        bottom_Frame,
-        text='Scan',
-        corner_radius=4,
-        fg_color="#1f3b4d",
-        text_color='white',
-        width=120,
+        footer,
+        text="📷 امسح الباركود",
+        height=44,
+        font=("Arial", 20, "bold"),
+        fg_color="#2a7fff",
         command=scan
-    ).grid(row=0, column=1, padx=5, pady=5)
-
+    ).grid(row=0, column=1, padx=5, sticky="ew")
 
     customtkinter.CTkButton(
-        bottom_Frame,
-        text='Save',
-        corner_radius=4,
-        fg_color="green",
-        text_color='white',
-        width=120,
+        footer,
+        text="💾 حفظ",
+        height=44,
+        font=("Arial", 20, "bold"),
+        fg_color="#22c55e",
         command=save
-    ).grid(row=0, column=2, padx=5, pady=5)
+    ).grid(row=0, column=2, padx=5, sticky="ew")
 
 
     price_var.trace_add("write", calculate_total)
@@ -503,7 +413,7 @@ def open_search_update_page():
                     rowheight=35, 
                     fieldbackground=tree_bg,
                     bordercolor="#333333",
-                    font=("Arial", 11))
+                    font=("Arial", 18))
     style.map("Treeview", background=[('selected', '#333333')]) 
 
 
@@ -649,11 +559,11 @@ def open_search_update_page():
         fg_color=("#ffffff", "#2b2b2b"),
         text_color=text_color,
         corner_radius=8,
-        font=("Arial", 14)
+        font=("Arial", 20)
     ).grid(row=0, column=1,sticky="ew" ,padx=5, pady=5)
     dateEntry = customtkinter.CTkEntry(
         rightFrame,
-        font=("Arial", 20),
+        font=("Arial", 22),
         width=250,
         height=50,
         fg_color=("#ffffff", "#2b2b2b"),
@@ -673,11 +583,11 @@ def open_search_update_page():
         fg_color=("#ffffff", "#2b2b2b"),
         text_color=text_color,
         corner_radius=8,
-        font=("Arial", 14)
+        font=("Arial", 20)
     ).grid(row=1, column=1,sticky="ew" ,padx=5, pady=5)
     nameEntry = customtkinter.CTkEntry(
         rightFrame,
-        font=("Arial", 20),
+        font=("Arial", 22),
         width=250,
         height=50,
         fg_color=("#ffffff", "#2b2b2b"),
@@ -695,11 +605,11 @@ def open_search_update_page():
         fg_color=("#ffffff", "#2b2b2b"),
         text_color=text_color,
         corner_radius=8,
-        font=("Arial", 14)
+        font=("Arial", 20)
     ).grid(row=2, column=1,sticky="ew" ,padx=5, pady=5)
     barcodeEntry = customtkinter.CTkEntry(
         rightFrame,
-        font=("Arial", 20),
+        font=("Arial", 22),
         width=250,
         height=50,
         fg_color=("#ffffff", "#2b2b2b"),
@@ -716,14 +626,14 @@ def open_search_update_page():
         fg_color=("#ffffff", "#2b2b2b"),
         text_color=text_color,
         corner_radius=8,
-        font=("Arial", 14)
+        font=("Arial", 20)
     ).grid(row=3, column=1,  sticky="ew", padx=5, pady=5)
     
     
     priceEntry = customtkinter.CTkEntry(
         rightFrame,
         textvariable=price_var,
-        font=("Arial", 20),
+        font=("Arial", 22),
         width=250,
         height=50,
         fg_color=("#ffffff", "#2b2b2b"),
@@ -740,12 +650,12 @@ def open_search_update_page():
         fg_color=("#ffffff", "#2b2b2b"),
         text_color=text_color,
         corner_radius=8,
-        font=("Arial", 14)
+        font=("Arial", 20)
     ).grid(row=4, column=1,  sticky="ew", padx=5, pady=5)
     quantityEntry = customtkinter.CTkEntry(
         rightFrame,
         textvariable=qty_var,
-        font=("Arial", 20),
+        font=("Arial", 22),
         width=250,
         height=50,
         fg_color=("#ffffff", "#2b2b2b"),
@@ -764,12 +674,12 @@ def open_search_update_page():
         fg_color=("#ffffff", "#2b2b2b"),
         text_color=text_color,
         corner_radius=8,
-        font=("Arial", 14)
+        font=("Arial", 20)
     ).grid(row=5, column=1,  sticky="ew", padx=5, pady=5)
     minQuantityEntry = customtkinter.CTkEntry(
         rightFrame,
         textvariable=min_qty_var,
-        font=("Arial", 20),
+        font=("Arial", 22),
         width=250,
         height=50,
         fg_color=("#ffffff", "#2b2b2b"),
@@ -788,12 +698,12 @@ def open_search_update_page():
         fg_color=("#ffffff", "#2b2b2b"),
         text_color=text_color,
         corner_radius=8,
-        font=("Arial", 14)
+        font=("Arial", 20)
     ).grid(row=6, column=1,  sticky="ew", padx=5, pady=5)
     totalEntry = customtkinter.CTkEntry(
         rightFrame,
         textvariable=total_var,
-        font=("Arial", 20),
+        font=("Arial", 22),
         width=250,
         height=50,
         fg_color=("#ffffff", "#2b2b2b"),
@@ -874,7 +784,7 @@ def open_statistics_storage_page():
                     rowheight=35, 
                     fieldbackground=tree_bg,
                     bordercolor="#333333",
-                    font=("Arial", 11))
+                    font=("Arial", 18))
     style.map("Treeview", background=[('selected', '#333333')]) 
     
     total_var = StringVar(value="0.00")
@@ -899,45 +809,66 @@ def open_statistics_storage_page():
 
         total_var.set(f"{grand_total:.2f}")
 
-    def export_to_pdf():    
+    def export_to_pdf():
         c = canvas.Canvas("storage_report.pdf", pagesize=A4)
         width, height = A4
 
-        c.setFont("Amiri", 14)
-        y = height - 40
-
+        c.setFont("Amiri", 15)
+        y = height - 50
         c.drawRightString(width - 40, y, ar("تقرير أرصدة المخزن"))
-        y -= 30
 
+        y -= 40
+        c.setFont("Amiri", 11)
+
+        # RTL order (right ➜ left)
         headers = [
-            "المعرف", "وقت الإضافة", "الاسم",
-            "الباركود", "السعر", "الكمية",
-            "الحد الأدنى", "الإجمالي"
+            "الإجمالي", "الحد الأدنى", "الكمية", "السعر",
+            "الباركود", "الاسم", "وقت الإضافة", "المعرف"
         ]
 
-        x_positions = [560, 500, 400, 300, 240, 190, 130, 70]
+        header_line = (
+            f"{headers[7]:>6}   "    # المعرف
+            f"{headers[6]:>20}   "   # وقت الإضافة
+            f"{headers[5]:>18}   "   # الاسم
+            f"{headers[4]:>14}   "   # الباركود
+            f"{headers[3]:>8}   "    # السعر
+            f"{headers[2]:>8}   "    # الكمية
+            f"{headers[1]:>10}   "   # الحد الأدنى
+            f"{headers[0]:>10}"      # الإجمالي
+        )
 
-        c.setFont("Amiri", 10)
-
-        for h, x in zip(headers, x_positions):
-            c.drawRightString(x, y, ar(h))
+        c.drawRightString(width - 40, y, ar(header_line))
+        y -= 10
+        c.line(40, y, width - 40, y)
 
         y -= 20
+        c.setFont("Amiri", 10)
+        row_height = 22
 
         for item in tree.get_children():
-            values = tree.item(item)["values"]
+            v = tree.item(item)["values"]
 
-            for val, x in zip(values, x_positions):
-                c.drawRightString(x, y, ar(val))
+            row = (
+                f"{rtl_safe(v[7]):>10}   "   # الإجمالي
+                f"{rtl_safe(v[6]):>10}   "   # الحد الأدنى
+                f"{rtl_safe(v[5]):>8}   "    # الكمية
+                f"{rtl_safe(v[4]):>8}   "    # السعر
+                f"{rtl_safe(v[3]):>14}   "   # الباركود
+                f"{rtl_safe(v[2]):>18}   "             # الاسم (English OK)
+                f"{rtl_safe(v[1]):>20}   "   # وقت الإضافة
+                f"{rtl_safe(v[0]):>6}"       # المعرف
+            )
 
-            y -= 18
-            if y < 50:
+            c.drawRightString(width - 40, y, row)
+            y -= row_height
+
+            if y < 70:
                 c.showPage()
                 c.setFont("Amiri", 10)
-                y = height - 40
+                y = height - 50
 
-        y -= 20
-        c.setFont("Amiri", 12)
+        y -= 10
+        c.setFont("Amiri", 13)
         c.drawRightString(
             width - 40,
             y,
@@ -946,6 +877,8 @@ def open_statistics_storage_page():
 
         c.save()
         messagebox.showinfo("تم", "تم إنشاء ملف PDF عربي بنجاح")
+
+
 
 
     def load_all_products_storage():
@@ -1006,14 +939,14 @@ def open_statistics_storage_page():
     customtkinter.CTkLabel(
         footer,
         text="إجمالي قيمة المخزن :",
-        font=("Arial", 14, "bold"),
+        font=("Arial", 20, "bold"),
         text_color=text
     ).grid(row=0, column=2, padx=10, pady=10, sticky="e")
 
     customtkinter.CTkEntry(
         footer,
         textvariable=total_var,
-        font=("Arial", 14),
+        font=("Arial", 22),
         justify="center",
         state="readonly",
         width=160,   # ✅ real width
@@ -1024,7 +957,7 @@ def open_statistics_storage_page():
         footer,
         text="📄 تصدير PDF",
         command=export_to_pdf,
-        font=("Arial", 14, "bold"),
+        font=("Arial", 20, "bold"),
         width=180,
         height=40,
         fg_color="#1f3b4d",
@@ -1062,7 +995,7 @@ def open_statistics_page():
             text=text,
             width=180,
             height=100,
-            font=("Arial", 16, "bold"),
+            font=("Arial", 20, "bold"),
             command=cmd,
             text_color="white",
             fg_color="#1f3b4d"
@@ -1079,6 +1012,38 @@ def open_statistics_page():
 
 def open_admin(root):
     # This now updates specific labels instead of a Listbox
+
+    appearance = customtkinter.get_appearance_mode()
+    theme = {
+        "Dark": {
+            "bg": "#121212",
+            "card": "#1e1e1e",
+            "text": "#ffffff",
+            "subtext": "#cccccc",
+            "button_fg": "#1f3b4d",
+            "button_hover": "#2c526a",
+            "success": "#27ae60",
+            "danger": "#e74c3c",
+            "bottom_bg": "#1e1e1e",
+        },
+        "Light": {
+            "bg": "#f4f6f8",
+            "card": "#ffffff",
+            "text": "#000000",
+            "subtext": "#555555",
+            "button_fg": "#1f3b4d",
+            "button_hover": "#2c526a",
+            "success": "#27ae60",
+            "danger": "#e74c3c",
+            "bottom_bg": "#ffffff",
+        }
+    }
+
+    colors = theme[appearance]
+
+    for widget in root.winfo_children():
+        widget.destroy()
+
     def update_information():
         try:
             products = get_number_of_products()
@@ -1094,18 +1059,32 @@ def open_admin(root):
 
     global username
     # Main container with a clean, light background
-    admin = customtkinter.CTkFrame(root, fg_color="#f0f2f5", corner_radius=0)
+    admin = customtkinter.CTkFrame(root, bg_color=colors['bg'], corner_radius=0)
     admin.pack(fill=BOTH, expand=True)
 
     # --- Header ---
-    header = customtkinter.CTkFrame(admin, fg_color="#1f3b4d", height=80, corner_radius=0)
-    header.pack(fill=X)
+    header = customtkinter.CTkFrame(admin, height=80, fg_color=colors["button_fg"], corner_radius=0)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+
+    header.grid_columnconfigure(0, weight=1)
+    header.grid_columnconfigure(1, weight=3)
+    header.grid_columnconfigure(2, weight=1)
+
     customtkinter.CTkLabel(
-        header, 
-        text="برنامج إدارة قطع غيار موتوسيكلات", 
-        text_color="white", 
-        font=("Arial", 24, "bold")
-    ).pack(pady=20)
+        header,
+        text="لوحة التحكم",
+        font=("Segoe UI", 32, "bold"),
+        text_color=colors["text"]
+    ).grid(row=0, column=1)
+
+    customtkinter.CTkLabel(
+        header,
+        text=f"👤 {username}",
+        font=("Segoe UI", 20),
+         text_color=colors["text"]
+    ).grid(row=0, column=2, sticky="e", padx=20)
+
 
     # Main content area
     content = customtkinter.CTkFrame(admin, fg_color="transparent")
@@ -1116,34 +1095,34 @@ def open_admin(root):
     left.pack(side=LEFT, fill=Y, padx=(0, 20))
 
     customtkinter.CTkLabel(
-        left, text="إحصائيات المخزن", 
-        font=("Arial", 20, "bold"), 
-        text_color="#1f3b4d"
-    ).pack(pady=(0, 15), anchor="e")
+        left, text="إحصائيات المخزن",
+        font=("Arial", 26, "bold"), 
+        text_color=colors["text"]
+    ).pack(pady=(0, 15), anchor="c")
 
     # Card 1: Product Count
-    card1 = customtkinter.CTkFrame(left, fg_color="white", corner_radius=15, height=110)
+    card1 = customtkinter.CTkFrame(left, fg_color=colors["card"], corner_radius=15, height=110)
     card1.pack(fill=X, pady=10)
     card1.pack_propagate(False)
-    customtkinter.CTkLabel(card1, text="عدد الأصناف", font=("Arial", 14), text_color="gray").pack(pady=(15, 0))
-    prod_count_label = customtkinter.CTkLabel(card1, text="0", font=("Arial", 30, "bold"), text_color="#1f3b4d")
+    customtkinter.CTkLabel(card1, text="عدد الأصناف", font=("Arial", 18), text_color=colors["subtext"]).pack(pady=(15, 0))
+    prod_count_label = customtkinter.CTkLabel(card1, text="0", font=("Arial", 30, "bold"), text_color=colors["button_fg"])
     prod_count_label.pack()
 
     # Card 2: Total Quantities
-    card2 = customtkinter.CTkFrame(left, fg_color="white", corner_radius=15, height=110)
+    card2 = customtkinter.CTkFrame(left, fg_color=colors["card"], corner_radius=15, height=110)
     card2.pack(fill=X, pady=10)
     card2.pack_propagate(False)
-    customtkinter.CTkLabel(card2, text="إجمالي الكميات", font=("Arial", 14), text_color="gray").pack(pady=(15, 0))
-    total_qty_label = customtkinter.CTkLabel(card2, text="0", font=("Arial", 30, "bold"), text_color="#27ae60")
+    customtkinter.CTkLabel(card2, text="إجمالي الكميات", font=("Arial", 18), text_color=colors["subtext"]).pack(pady=(15, 0))
+    total_qty_label = customtkinter.CTkLabel(card2, text="0", font=("Arial", 30, "bold"), text_color=colors["success"])
     total_qty_label.pack()
 
     customtkinter.CTkButton(
         left, text="تحديث البيانات", 
         command=update_information, 
-        fg_color="#1f3b4d", 
-        hover_color="#2c526a",
+        fg_color=colors["button_fg"],
+        hover_color=colors["button_hover"],
         height=45, 
-        font=("Arial", 14, "bold")
+        font=("Arial", 24, "bold")
     ).pack(fill=X, pady=20)
 
     # --- Right Panel (Navigation Grid) ---
@@ -1153,21 +1132,49 @@ def open_admin(root):
     for i in range(3): right.grid_columnconfigure(i, weight=1)
     for i in range(2): right.grid_rowconfigure(i, weight=1)
 
+    BASE_DIR = os.path.dirname(__file__)
+    ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+
+
+    add_image = customtkinter.CTkImage(
+        Image.open(os.path.join(ASSETS_DIR, "add.png")),
+        size=(50, 50)
+    )
+    search_image = customtkinter.CTkImage(
+        Image.open( os.path.join(ASSETS_DIR, "search.png")),
+        size=(50, 50)
+    )
+    statistics_image = customtkinter.CTkImage(
+        Image.open(os.path.join(ASSETS_DIR, "statistics.png") ),
+        size=(50, 50)
+    )
+    storage_image = customtkinter.CTkImage(
+        Image.open( os.path.join(ASSETS_DIR, "storage.png")),
+        size=(50, 50)
+    )
+    users_image = customtkinter.CTkImage(
+        Image.open(os.path.join(ASSETS_DIR, "users.png")),
+        size=(50, 50)
+    )
+
+
     buttons = [
-        ("إضافة صنف", open_add_product),
-        ("إضافة للمخزن", open_add_to_storage),
-        ("بحث وتعديل", open_search_update_page),
-        ("فاتورة بيع", None),
-        ("المستخدمين", None),
-        ("التقارير", open_statistics_page),
+        ("إضافة صنف", open_add_product, add_image),
+        ("إضافة للمخزن", open_add_to_storage, storage_image),
+        ("بحث وتعديل", open_search_update_page, search_image),
+        ("فاتورة بيع", None, None),
+        ("المستخدمين", None, users_image),
+        ("التقارير", open_statistics_page, statistics_image),
     ]
 
     row = col = 0
-    for text, cmd in buttons:
+    for text, cmd, image in buttons:
         btn = customtkinter.CTkButton(
-            right, text=text, font=("Arial", 16, "bold"),
-            command=cmd, fg_color="#1f3b4d", hover_color="#2c526a",
-            corner_radius=15
+            right, text=text, font=("Arial", 26, "bold"),
+            command=cmd, fg_color=colors["button_fg"], hover_color=colors["button_hover"],
+            corner_radius=15,
+            image=image,
+            compound=BOTTOM
         )
         btn.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
         col += 1
@@ -1176,25 +1183,26 @@ def open_admin(root):
             row += 1
 
     # --- Bottom Bar ---
-    bottom_frame = customtkinter.CTkFrame(admin, fg_color="white", height=60, corner_radius=0)
+    bottom_frame = customtkinter.CTkFrame(admin, fg_color=colors["bottom_bg"], height=60, corner_radius=0)
     bottom_frame.pack(side=BOTTOM, fill=X)
+    bottom_frame.pack_propagate(False)
 
     customtkinter.CTkButton(
         bottom_frame, text="X خروج", command=root.destroy,
-        fg_color="#e74c3c", hover_color="#c0392b", text_color="white",
-        width=120, height=35
+        fg_color=colors["danger"], hover_color="#c0392b", text_color="white",
+        width=120, height=35, font=("Arial", 24, "bold")
     ).pack(side=LEFT, padx=15, pady=10)
 
     customtkinter.CTkButton(
         bottom_frame, text="تبديل المستخدم",
         command=lambda: [admin.destroy(), go_login(root)],
         fg_color="#95a5a6", hover_color="#7f8c8d", text_color="white",
-        width=120, height=35
+        width=120, height=35, font=("Arial", 24, "bold")
     ).pack(side=LEFT, padx=10, pady=10)
 
     customtkinter.CTkLabel(
-        bottom_frame, text=f"أهلاً بك: {username}", 
-        font=("Arial", 16, "bold"), text_color="#1f3b4d"
+        bottom_frame, text=f" {username} :أهلاً بك", 
+        font=("Arial", 24, "bold"), text_color=colors["text"]
     ).pack(side=RIGHT, padx=25, pady=10)
 
     # Initial load
