@@ -7,11 +7,11 @@ from UI.basewindow import BaseWindow
 from UI.router import go_login
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-
+from Services.admin_service import get_products
 pdfmetrics.registerFont(TTFont("Amiri", "Amiri-Regular.ttf"))
 Database.init_db()
 Database.add_default_users()
-
+print(len(get_products()))
 
 
 

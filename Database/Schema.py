@@ -1,6 +1,8 @@
 import sqlite3
 import os
-
+import random
+import string
+import datetime
 
 
 def migrate_db(db_path):
@@ -34,7 +36,7 @@ def migrate_db(db_path):
 
         c.execute("""
             INSERT INTO products (id, created_at, name, barcode, sell_price, quantity, min_quantity)
-            SELECT id, time, name, barcode, sell_price, quantity, 5
+            SELECT id, created_at, name, barcode, sell_price, quantity, 5
             FROM products_old
         """)
 
@@ -110,6 +112,8 @@ class Database:
         conn.commit()
         conn.close()
 
+        Database.seed_default_products(200)
+
     @staticmethod
     def add_default_users():
         conn = Database.get_connection()
@@ -123,5 +127,38 @@ class Database:
                 )
             except sqlite3.IntegrityError:
                 pass
+        conn.commit()
+        conn.close()
+    @staticmethod
+    def seed_default_products(count=200):
+        conn = Database.get_connection()
+        c = conn.cursor()
+
+        c.execute("SELECT COUNT(*) FROM products")
+        current_count = c.fetchone()[0]
+
+        if current_count >= count:
+            conn.close()
+            return
+
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        products = []
+        for i in range(1, count + 1):
+            products.append((
+                now,
+                f"Product {i}",
+                f"BC{random.randint(10**9, 10**10-1)}",
+                round(random.uniform(5, 500), 2),
+                random.randint(0, 100),
+                random.randint(1, 10)
+            ))
+
+        c.executemany("""
+            INSERT INTO products
+            (created_at, name, barcode, sell_price, quantity, min_quantity)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, products)
+
         conn.commit()
         conn.close()
