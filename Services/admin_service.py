@@ -184,7 +184,7 @@ def get_low_stock_products():
     conn = Database.get_connection()
     c = conn.cursor()
     c.execute("""
-        SELECT name, quantity, min_quantity
+        SELECT id,created_at ,name, barcode, sell_price, quantity, min_quantity
         FROM products
         WHERE quantity <= min_quantity
         ORDER BY quantity ASC

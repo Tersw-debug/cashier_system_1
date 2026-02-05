@@ -969,6 +969,215 @@ def open_statistics_storage_page():
 
 
 
+def open_products_shortage_page():
+    win = Toplevel()
+    win.title("ارصدة المخزن")
+    win.geometry("500x600")
+    win.grab_set()
+    bg_color = ("#ffffff", "#121212") 
+    card_color = ("#f8f9fa", "#1e1e1e") 
+    text_color = ("#000000", "#ffffff") 
+    appearance = customtkinter.get_appearance_mode()
+    card = card_color[1] if appearance == "Dark" else card_color[0]
+    text = text_color[1] if appearance == "Dark" else text_color[0]
+    win.configure(bg=bg_color[1] if customtkinter.get_appearance_mode() == "Dark" else bg_color[0])
+    
+
+    style = ttk.Style()
+    style.theme_use("default")
+
+    tree_bg = "#1e1e1e"
+    tree_fg = "white"
+
+    style.configure("Treeview", 
+                    background=tree_bg, 
+                    foreground=tree_fg, 
+                    rowheight=35, 
+                    fieldbackground=tree_bg,
+                    bordercolor="#333333",
+                    font=("Arial", 18))
+    style.map("Treeview", background=[('selected', '#333333')]) 
+    
+    total_var = StringVar(value="0.00")
+    
+    def load_results(products):
+        tree.delete(*tree.get_children())
+        grand_total = 0.0
+
+        for p in products:
+            price = float(p[4])
+            qty = int(p[5])
+            row_total = price * qty
+            grand_total += row_total
+
+            tree.insert("", END, values=(
+                p[0], p[1], p[2], p[3],
+                f"{price:.2f}",
+                qty,
+                p[6],
+                f"{row_total:.2f}"
+            ))
+
+        total_var.set(f"{grand_total:.2f}")
+
+    def export_to_pdf():
+        c = canvas.Canvas("storage_report.pdf", pagesize=A4)
+        width, height = A4
+
+        c.setFont("Amiri", 15)
+        y = height - 50
+        c.drawRightString(width - 40, y, ar("تقرير أرصدة المخزن"))
+
+        y -= 40
+        c.setFont("Amiri", 11)
+
+        # RTL order (right ➜ left)
+        headers = [
+            "الإجمالي", "الحد الأدنى", "الكمية", "السعر",
+            "الباركود", "الاسم", "وقت الإضافة", "المعرف"
+        ]
+
+        header_line = (
+            f"{headers[7]:>6}   "    # المعرف
+            f"{headers[6]:>20}   "   # وقت الإضافة
+            f"{headers[5]:>18}   "   # الاسم
+            f"{headers[4]:>14}   "   # الباركود
+            f"{headers[3]:>8}   "    # السعر
+            f"{headers[2]:>8}   "    # الكمية
+            f"{headers[1]:>10}   "   # الحد الأدنى
+            f"{headers[0]:>10}"      # الإجمالي
+        )
+
+        c.drawRightString(width - 40, y, ar(header_line))
+        y -= 10
+        c.line(40, y, width - 40, y)
+
+        y -= 20
+        c.setFont("Amiri", 10)
+        row_height = 22
+
+        for item in tree.get_children():
+            v = tree.item(item)["values"]
+
+            row = (
+                f"{rtl_safe(v[7]):>10}   "   # الإجمالي
+                f"{rtl_safe(v[6]):>10}   "   # الحد الأدنى
+                f"{rtl_safe(v[5]):>8}   "    # الكمية
+                f"{rtl_safe(v[4]):>8}   "    # السعر
+                f"{rtl_safe(v[3]):>14}   "   # الباركود
+                f"{rtl_safe(v[2]):>18}   "             # الاسم (English OK)
+                f"{rtl_safe(v[1]):>20}   "   # وقت الإضافة
+                f"{rtl_safe(v[0]):>6}"       # المعرف
+            )
+
+            c.drawRightString(width - 40, y, row)
+            y -= row_height
+
+            if y < 70:
+                c.showPage()
+                c.setFont("Amiri", 10)
+                y = height - 50
+
+        y -= 10
+        c.setFont("Amiri", 13)
+        c.drawRightString(
+            width - 40,
+            y,
+            ar(f"الإجمالي الكلي: {total_var.get()}")
+        )
+
+        c.save()
+        messagebox.showinfo("تم", "تم إنشاء ملف PDF عربي بنجاح")
+
+
+
+
+    def load_all_products_storage():
+        products_from_database = get_low_stock_products()
+        load_results(products_from_database)
+
+    
+    columns = ("id", "created_at","name", "barcode", "price", "qty", "min_qty", "total")
+
+    table_frame = Frame(win)
+    table_frame.pack(fill=BOTH, expand=True)
+    
+    
+
+    tree = ttk.Treeview(
+        table_frame,
+        columns=columns,
+        show="headings"
+    )
+
+    tree.heading("id", text="ID")
+    tree.heading("created_at", text="وقت الاضافة")
+    tree.heading("name", text="الاسم")
+    tree.heading("barcode", text="الباركود")
+    tree.heading("price", text="السعر")
+    tree.heading("qty", text="الكمية")
+    tree.heading("min_qty", text="الحد الادني")
+    tree.heading("total", text="الاجمالي")
+
+    tree.column("id", width=50, anchor=CENTER)
+    tree.column("created_at", width=50, anchor=CENTER)
+    tree.column("name", width=150)
+    tree.column("barcode", width=120)
+    tree.column("price", width=80, anchor=CENTER)
+    tree.column("qty", width=80, anchor=CENTER)
+    tree.column("min_qty", width=80, anchor=CENTER)
+    tree.column("total", width=100, anchor=CENTER)
+
+    tree.pack(fill=BOTH, expand=True)
+
+    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=scrollbar.set)
+
+    tree.pack(side=LEFT, fill=BOTH, expand=True)
+    scrollbar.pack(side=RIGHT, fill=Y)
+
+    footer = customtkinter.CTkFrame(
+        win,
+        fg_color=card,
+        corner_radius=12
+    )
+    footer.pack(fill=X, padx=10, pady=10)
+
+    footer.grid_columnconfigure(0, weight=1)
+    footer.grid_columnconfigure(1, weight=0)
+    footer.grid_columnconfigure(2, weight=0)
+
+    customtkinter.CTkLabel(
+        footer,
+        text="إجمالي قيمة المخزن :",
+        font=("Arial", 20, "bold"),
+        text_color=text
+    ).grid(row=0, column=2, padx=10, pady=10, sticky="e")
+
+    customtkinter.CTkEntry(
+        footer,
+        textvariable=total_var,
+        font=("Arial", 22),
+        justify="center",
+        state="readonly",
+        width=160,   # ✅ real width
+        height=36
+    ).grid(row=0, column=1, padx=10, pady=10)
+
+    pdfButton = customtkinter.CTkButton(
+        footer,
+        text="📄 تصدير PDF",
+        command=export_to_pdf,
+        font=("Arial", 20, "bold"),
+        width=180,
+        height=40,
+        fg_color="#1f3b4d",
+        hover_color="#2a4f6b"
+    )
+    pdfButton.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+
+    load_all_products_storage()
+
 
 
 def open_statistics_page():
@@ -982,7 +1191,7 @@ def open_statistics_page():
     win.grid_columnconfigure(1, weight=1)
 
     buttons = [
-        ("ارصدة النواقص", None),
+        ("ارصدة النواقص", open_products_shortage_page),
         ("ارصدة المخزن", open_statistics_storage_page),
         
     ]

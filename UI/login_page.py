@@ -2,6 +2,8 @@ import customtkinter
 from tkinter import CENTER
 from UI.login_ui import login_ui
 from PIL import Image
+import os
+
 def show_login(root):
 
     customtkinter.set_appearance_mode("dark")  # or "dark"
@@ -17,38 +19,53 @@ def show_login(root):
     main_container.pack(fill="both" ,expand=True)
 
     main_container.grid_columnconfigure(0,weight=3)
-    main_container.grid_columnconfigure(1,weight=1)
+    main_container.grid_columnconfigure(1,weight=2)
     main_container.grid_rowconfigure(0, weight=1)
 
     # Background frame (optional, helps contrast)
     left = customtkinter.CTkFrame(main_container, fg_color=bg_color)
     left.grid(row=0, column=0, sticky="nsew")
+    left.grid_propagate(False)
 
 
-    right = customtkinter.CTkFrame(main_container, fg_color=bg_color)
-    right.grid(row=0, column=1, sticky="nsew")
+
+    right = customtkinter.CTkFrame(main_container, fg_color=bg_color, width=400)
+    right.grid(row=0, column=1, sticky="ns")
     # Card
     frame = customtkinter.CTkFrame(
         right,
-        width=420,
-        height=360,
-        corner_radius=20,
+        width=400,
+        height=450,
         fg_color=card_color,
         bg_color=bg_color
     )
-    frame.pack(expand=True)
+    frame.pack(fill="both",expand=True)
     frame.pack_propagate(False)
 
     # Title
-    customtkinter.CTkLabel(
+    frame_content = customtkinter.CTkFrame(
         frame,
+        width=360,       # give width
+        height=500,      # give height
+        fg_color=card_color,
+        bg_color=bg_color
+    )
+
+    frame_content.place(relx=0.5, rely=0.5, anchor='center')
+    frame_content.pack_propagate(False)
+
+    customtkinter.CTkLabel(
+        frame_content,
         text="Welcome Back",
         font=("Segoe UI", 26, "bold"),
         text_color=text_color
-    ).pack(pady=(30, 5))
+    ).pack(pady=(30, 10))
+
+
+    
 
     customtkinter.CTkLabel(
-        frame,
+        frame_content,
         text="Login to your account",
         font=("Segoe UI", 13),
         text_color="#777"
@@ -56,14 +73,14 @@ def show_login(root):
 
     # Username
     customtkinter.CTkLabel(
-        frame,
+        frame_content,
         text="Username",
         font=("Segoe UI", 12, "bold"),
         text_color="#777"
     ).pack(anchor="w", padx=40)
 
     e1 = customtkinter.CTkEntry(
-        frame,
+        frame_content,
         width=320,
         height=40,
         corner_radius=10,
@@ -74,14 +91,14 @@ def show_login(root):
 
     # Password
     customtkinter.CTkLabel(
-        frame,
+        frame_content,
         text="Password",
         font=("Segoe UI", 12, "bold"),
         text_color="#777"
     ).pack(anchor="w", padx=40)
 
     e2 = customtkinter.CTkEntry(
-        frame,
+        frame_content,
         width=320,
         height=40,
         corner_radius=10,
@@ -93,7 +110,7 @@ def show_login(root):
 
     # Login button
     login_button = customtkinter.CTkButton(
-        frame,
+        frame_content,
         text="Login",
         command=lambda: login_ui(root, e1, e2, frame),
         width=320,
@@ -106,15 +123,26 @@ def show_login(root):
     login_button.pack(pady=(0, 20))
 
     root.bind("<Return>", lambda e: login_button.invoke())
-    """
-    image = customtkinter.CTkImage(
-        Image.open("assets/login.png"),
-        size=(500, 500)
-    )
-"""
-    customtkinter.CTkLabel(
-        left,
-        text=""
-    ).pack(expand=True)
+    BASE_DIR = os.path.dirname(__file__)
+    ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+    
+    original_image = Image.open(os.path.join(ASSETS_DIR, "background.png"))
+
+    
+    bg_image = customtkinter.CTkImage(light_image=original_image, dark_image=original_image, size=(1, 1))
+    
+    bg_label = customtkinter.CTkLabel(left, text="", image=bg_image)
+    bg_label.pack(fill="both", expand=True)
+
+    def resize_image(event):
+        # Calculate new dimensions to fill the frame
+        new_width = event.width
+        new_height = event.height
+        
+        # Update the CTkImage size dynamically
+        bg_image.configure(size=(new_width, new_height))
+
+    # Bind the resize function to the frame
+    left.bind("<Configure>", resize_image)
 
     return main_container

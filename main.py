@@ -11,7 +11,7 @@ from Services.admin_service import get_products
 pdfmetrics.registerFont(TTFont("Amiri", "Amiri-Regular.ttf"))
 Database.init_db()
 Database.add_default_users()
-print(len(get_products()))
+
 
 
 
