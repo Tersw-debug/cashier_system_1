@@ -15,7 +15,7 @@ from bidi.algorithm import get_display
 from PIL import Image
 import os
 import re
-
+import openpyxl
 
 def ar(text):
     reshaped = arabic_reshaper.reshape(str(text))
@@ -68,6 +68,7 @@ def open_add_product():
             total_var.set("0.00")
 
     def save():
+        global username
         created_at = dateEntry.get().strip()
         name = nameEntry.get().strip()
         barcode = barcodeEntry.get().strip()
@@ -94,7 +95,8 @@ def open_add_product():
             product.barcode,
             product.price,
             product.qty,
-            product.min_qty
+            product.min_qty,
+            user_id=get_user_id(username)
         )
 
         messagebox.showinfo("تم", "تم حفظ الصنف بنجاح")
@@ -240,32 +242,42 @@ def open_add_to_storage():
         except ValueError:
             total_var.set("0.00")
 
+    
     def save():
-        created_at = dateEntry.get().strip()
+        global username
         option = value_inside.get().strip()
         barcode = barcodeEntry.get().strip()
         price = price_var.get().strip()
         qty = qty_var.get().strip()
         min_qty = min_qty_var.get().strip()
 
-
-        if not all([option, qty]):
-            messagebox.showerror("خطأ", "يجب ان تختار الصنف و الكمية")
+        if option == "اختر صنف" or not qty:
+            messagebox.showerror("خطأ", "يجب اختيار الصنف والكمية")
             return
 
         try:
-            price = float(price)
             qty = int(qty)
-            
+            price = float(price) if price else None
+            min_qty = int(min_qty) if min_qty else None
         except ValueError:
-            messagebox.showerror("خطأ", "السعر أو الكمية غير صحيحة")
+            messagebox.showerror("خطأ", "البيانات غير صحيحة")
             return
 
-        
-        product = Product(created_at,option, barcode, price, qty, min_qty)
-        add_quantity_product(product.name, product.barcode, product.price, product.qty, product.min_qty)
+        try:
+            admin_add_stock(
+                product_name=option,
+                added_qty=qty,
+                new_price=price,
+                new_barcode=barcode,
+                new_min_qty=min_qty,
+                user_id=get_user_id(username),   # TODO: replace with logged-in admin ID
+                note="إضافة مخزن"
+            )
+        except Exception as e:
+            messagebox.showerror("خطأ", str(e))
+            return
 
-        messagebox.showinfo("تم", "تم حفظ الصنف بنجاح")
+        messagebox.showinfo("تم", "تمت إضافة الكمية بنجاح")
         win.destroy()
 
     def scan():
@@ -422,7 +434,7 @@ def open_search_update_page():
     qty_var = StringVar()
     total_var = StringVar(value="0.0")
 
-    
+    get_id = {}
 
     def searchProduct(event=None): 
         name = nameEntry.get().strip()
@@ -435,9 +447,45 @@ def open_search_update_page():
 
        
         products = get_product_by_name_or_barcode(name, barcode)
-        
-        
         load_results(products)
+
+
+    def deleteProduct():
+        global username
+        if not selected_product_id:
+            messagebox.showwarning("تنبيه", "من فضلك اختر منتج أولاً")
+            return
+
+        confirm = messagebox.askyesno(
+            "تأكيد الحذف",
+            "هل أنت متأكد من حذف هذا المنتج نهائيًا؟\nسيتم تسجيل العملية في سجل المخزون."
+        )
+
+        if not confirm:
+            return
+
+        try:
+            delete_product(
+                pid=selected_product_id,
+                user_id=get_user_id(username)  # TODO: admin id الحقيقي
+            )
+
+            messagebox.showinfo("تم", "تم حذف المنتج بنجاح")
+
+            # refresh UI
+            load_all_products()
+
+            # clear fields
+            nameEntry.delete(0, END)
+            barcodeEntry.delete(0, END)
+            price_var.set("")
+            qty_var.set("")
+            min_qty_var.set("")
+            total_var.set("0.00")
+
+        except Exception as e:
+            messagebox.showerror("خطأ", str(e))
+
         
     def calculate_total(*args):
         try:
@@ -521,6 +569,7 @@ def open_search_update_page():
     rightFrame.pack(side=RIGHT, fill=Y, padx=(10, 0))
 
     def update_product():
+        global username
         if not selected_product_id:
             messagebox.showwarning("Error", "No product selected")
             return
@@ -529,9 +578,16 @@ def open_search_update_page():
         price = price_var.get().strip()
         qty = qty_var.get().strip()
         min_qty = min_qty_var.get().strip()
-        update_product_data(selected_product_id, name,barcode, price, qty, min_qty)
-
- 
+        update_product_data(
+            pid=selected_product_id,
+            name=name,
+            barcode=barcode,
+            price=price,
+            new_qty=qty,
+            min_qty=min_qty,
+            user_id=get_user_id(username)  # TODO: replace with logged-in admin
+        )
+        
         messagebox.showinfo("Success", "Product updated")
 
 
@@ -729,13 +785,13 @@ def open_search_update_page():
 
     customtkinter.CTkButton(
         buttons_frame,
-        text=" ابحث ",
+        text=" مسح ",
         height=50,
         fg_color=("#000000", "#ffffff"), 
         text_color=("#ffffff", "#000000"),
         hover_color="#333333",
-        command=searchProduct
-    ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        command=deleteProduct
+    ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
 
     customtkinter.CTkButton(
         buttons_frame,
@@ -745,7 +801,7 @@ def open_search_update_page():
         hover_color="#333333",
         height=50,
         command=update_product
-    ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+    ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
 
     barcodeEntry.bind("<Return>", on_barcode_enter)
@@ -1178,6 +1234,234 @@ def open_products_shortage_page():
 
     load_all_products_storage()
 
+def open_inventory_history_page():
+    win = Toplevel()
+    win.title("سجل حركة المخزون")
+    win.geometry("900x600")
+    win.grab_set()
+
+    bg_color = ("#ffffff", "#121212")
+    card_color = ("#f8f9fa", "#1e1e1e")
+    text_color = ("#000000", "#ffffff")
+
+    appearance = customtkinter.get_appearance_mode()
+    win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
+
+    def export_excel():
+        rows = get_inventory_history(
+            from_var.get() or None,
+            to_var.get() or None
+        )
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Inventory History"
+
+        headers = [
+            "ID", "Date", "Product", "Action",
+            "Old Qty", "Change", "New Qty",
+            "Old Price", "New Price", "Note"
+        ]
+        ws.append(headers)
+
+        for r in rows:
+            ws.append(r)
+
+        filename = "inventory_history.xlsx"
+        wb.save(filename)
+
+        messagebox.showinfo("تم", "تم تصدير ملف Excel بنجاح")
+    def export_pdf():
+        rows = get_inventory_history(
+            from_var.get() or None,
+            to_var.get() or None
+        )
+
+        c = canvas.Canvas("inventory_history.pdf", pagesize=A4)
+        width, height = A4
+        y = height - 40
+
+        c.setFont("Amiri", 15)
+        c.drawRightString(width - 40, y, ar("سجل حركة المخزون"))
+        y -= 30
+
+        c.setFont("Amiri", 10)
+
+        for r in rows:
+            line = (
+                f"{rtl_safe(r[3]):>8}   "
+                f"{rtl_safe(r[6]):>6}   "
+                f"{rtl_safe(r[5]):>6}   "
+                f"{rtl_safe(r[2]):>18}   "
+                f"{rtl_safe(r[1]):>16}"
+            )
+
+            c.drawRightString(width - 40, y, line)
+            y -= 18
+
+            if y < 60:
+                c.showPage()
+                c.setFont("Amiri", 10)
+                y = height - 40
+
+        c.save()
+        messagebox.showinfo("تم", "تم تصدير ملف PDF بنجاح")
+    style = ttk.Style()
+    style.theme_use("default")
+
+    tree_bg = "#1e1e1e"
+    tree_fg = "white"
+
+    style.configure(
+        "Treeview",
+        background=tree_bg,
+        foreground=tree_fg,
+        rowheight=32,
+        fieldbackground=tree_bg,
+        font=("Arial", 16)
+    )
+    style.map("Treeview", background=[('selected', '#333333')])
+
+    columns = (
+        "id",
+        "created_at",
+        "name",
+        "action",
+        "old_qty",
+        "change",
+        "new_qty",
+        "old_price",
+        "new_price",
+        "note"
+    )
+
+    filter_frame = customtkinter.CTkFrame(
+    win,
+    fg_color=card_color[1] if appearance == "Dark" else card_color[0],
+    corner_radius=12
+    )
+    filter_frame.pack(fill=X, padx=10, pady=10)
+
+    from_var = StringVar()
+    to_var = StringVar()
+
+    customtkinter.CTkLabel(
+        filter_frame, text="من:", font=("Arial", 16)
+    ).grid(row=0, column=0, padx=8, pady=8)
+
+    from_entry = customtkinter.CTkEntry(
+        filter_frame,
+        textvariable=from_var,
+        placeholder_text="YYYY-MM-DD",
+        width=140
+    )
+    from_entry.grid(row=0, column=1, padx=8)
+
+    customtkinter.CTkLabel(
+        filter_frame, text="إلى:", font=("Arial", 16)
+    ).grid(row=0, column=2, padx=8)
+
+    to_entry = customtkinter.CTkEntry(
+        filter_frame,
+        textvariable=to_var,
+        placeholder_text="YYYY-MM-DD",
+        width=140
+    )
+    to_entry.grid(row=0, column=3, padx=8)
+
+
+    table_frame = Frame(win)
+    table_frame.pack(fill=BOTH, expand=True)
+
+    tree = ttk.Treeview(
+        table_frame,
+        columns=columns,
+        show="headings"
+    )
+
+    tree.heading("id", text="ID")
+    tree.heading("created_at", text="الوقت")
+    tree.heading("name", text="المنتج")
+    tree.heading("action", text="العملية")
+    tree.heading("old_qty", text="الكمية قبل")
+    tree.heading("change", text="التغير")
+    tree.heading("new_qty", text="الكمية بعد")
+    tree.heading("old_price", text="السعر قبل")
+    tree.heading("new_price", text="السعر بعد")
+    tree.heading("note", text="ملاحظة")
+
+    tree.column("id", width=50, anchor=CENTER)
+    tree.column("created_at", width=150, anchor=CENTER)
+    tree.column("name", width=160)
+    tree.column("action", width=90, anchor=CENTER)
+    tree.column("old_qty", width=90, anchor=CENTER)
+    tree.column("change", width=90, anchor=CENTER)
+    tree.column("new_qty", width=90, anchor=CENTER)
+    tree.column("old_price", width=90, anchor=CENTER)
+    tree.column("new_price", width=90, anchor=CENTER)
+    tree.column("note", width=200)
+
+    tree.pack(side=LEFT, fill=BOTH, expand=True)
+
+    scrollbar = ttk.Scrollbar(
+        table_frame,
+        orient="vertical",
+        command=tree.yview
+    )
+    tree.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side=RIGHT, fill=Y)
+
+    def load_history():
+        tree.delete(*tree.get_children())
+
+        rows = get_inventory_history(
+            from_var.get() or None,
+            to_var.get() or None
+        )
+
+        for r in rows:
+            tree.insert("", END, values=(
+                r[0], r[1], r[2], r[3],
+                r[4], r[5], r[6],
+                f"{r[7]:.2f}" if r[7] is not None else "",
+                f"{r[8]:.2f}" if r[8] is not None else "",
+                r[9] or ""
+            ))
+
+    customtkinter.CTkButton(
+        filter_frame,
+        text="تطبيق",
+        width=120,
+        height=36,
+        font=("Arial", 16, "bold"),
+        fg_color="#1f3b4d",
+        command=load_history
+    ).grid(row=0, column=4, padx=10)
+
+    export_frame = customtkinter.CTkFrame(win, corner_radius=12)
+    export_frame.pack(fill=X, padx=10, pady=10)
+
+    customtkinter.CTkButton(
+        export_frame,
+        text="📄 تصدير PDF",
+        width=160,
+        height=40,
+        font=("Arial", 18, "bold"),
+        command=export_pdf,
+        fg_color="#1f3b4d"
+    ).pack(side=LEFT, padx=10)
+
+    customtkinter.CTkButton(
+        export_frame,
+        text="📊 تصدير Excel",
+        width=160,
+        height=40,
+        font=("Arial", 18, "bold"),
+        command=export_excel,
+        fg_color="#2a7f62"
+    ).pack(side=LEFT, padx=10)
+
+    load_history()
 
 
 def open_statistics_page():
@@ -1193,6 +1477,7 @@ def open_statistics_page():
     buttons = [
         ("ارصدة النواقص", open_products_shortage_page),
         ("ارصدة المخزن", open_statistics_storage_page),
+        ("سجل حركة المخزون", open_inventory_history_page),
         
     ]
 
@@ -1217,6 +1502,148 @@ def open_statistics_page():
             row += 1
 
 
+
+def open_sells_admin():
+    win = Toplevel()
+    win.title("سجل حركة المخزون")
+    win.geometry("900x600")
+    win.grab_set()
+
+    bg_color = ("#ffffff", "#121212")
+    card_color = ("#f8f9fa", "#1e1e1e")
+    text_color = ("#000000", "#ffffff")
+
+    appearance = customtkinter.get_appearance_mode()
+    win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
+
+    main = customtkinter.CTkFrame(win, fg_color="transparent")
+    main.pack(fill=BOTH, expand=True, padx=15, pady=15)
+
+
+    # ================= LEFT (SALE FORM) =================
+    left = customtkinter.CTkFrame(main, fg_color=card_color, corner_radius=15)
+    left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
+
+    tree = ttk.Treeview(
+        left,
+        columns=("id", "name", "barcode", "price", "qty"),
+        show="headings"
+    )
+
+    for col, txt, w in [
+        ("id", "ID", 40),
+        ("name", "الاسم", 150),
+        ("barcode", "باركود", 120),
+        ("price", "السعر", 80),
+        ("qty", "المخزون", 80),
+    ]:
+        tree.heading(col, text=txt)
+        tree.column(col, width=w, anchor=CENTER)
+
+    tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+    def load_products():
+        tree.delete(*tree.get_children())
+        for p in get_products():
+            tree.insert("", END, values=(p[0], p[1], p[2], p[3], p[4]))
+
+    load_products()
+
+    right = customtkinter.CTkFrame(main, fg_color=card_color, corner_radius=15, width=380)
+    right.pack(side=RIGHT, fill=Y)
+    right.pack_propagate(False)
+    product_id = None
+    qty_var = StringVar(value="1")
+    paid_var = StringVar()
+
+    def select_product(event):
+        nonlocal product_id
+        item = tree.focus()
+        if not item:
+            return
+        values = tree.item(item, "values")
+        product_id = int(values[0])
+        name_entry.delete(0, END)
+        name_entry.insert(0, values[1])
+
+    tree.bind("<<TreeviewSelect>>", select_product)
+    name_entry = customtkinter.CTkEntry(
+    right, placeholder_text="اسم المنتج أو الباركود",
+    font=("Arial", 18)
+    )
+    name_entry.pack(fill=X, padx=10, pady=5)
+
+    is_customer = BooleanVar(value=False)
+
+    customer_frame = customtkinter.CTkFrame(right, fg_color="transparent")
+
+    def toggle_customer():
+        if is_customer.get():
+            customer_frame.pack(fill=X, padx=10, pady=5)
+        else:
+            customer_frame.pack_forget()
+
+    customtkinter.CTkCheckBox(
+        right,
+        text="عميل",
+        variable=is_customer,
+        command=toggle_customer,
+        font=("Arial", 18)
+    ).pack(pady=10)
+    customer_name = StringVar()
+    customer_phone = StringVar()
+
+    customtkinter.CTkEntry(
+        customer_frame,
+        textvariable=customer_name,
+        placeholder_text="اسم العميل",
+        font=("Arial", 18)
+    ).pack(fill=X, pady=5)
+
+    customtkinter.CTkEntry(
+        customer_frame,
+        textvariable=customer_phone,
+        placeholder_text="رقم الهاتف",
+        font=("Arial", 18)
+    ).pack(fill=X, pady=5)
+    customtkinter.CTkEntry(
+        right,
+        textvariable=qty_var,
+        placeholder_text="الكمية",
+        font=("Arial", 18)
+    ).pack(fill=X, padx=10, pady=5)
+
+    customtkinter.CTkEntry(
+        right,
+        textvariable=paid_var,
+        placeholder_text="المبلغ المدفوع",
+        font=("Arial", 18)
+    ).pack(fill=X, padx=10, pady=5)
+    def confirm_sale():
+        global username
+        cashier_id = get_user_id(username)
+
+        customer_id = None
+        if is_customer.get():
+            customer_id = get_or_create_customer(
+                customer_name.get().strip(),
+                customer_phone.get().strip()
+            )
+
+        ok, msg = Database.sell_product(
+            cashier_id=cashier_id,
+            items=[(product_id, int(qty_var.get()))],
+            amount_paid=float(paid_var.get()),
+            customer_id=customer_id
+        )
+
+        messagebox.showinfo("النتيجة", msg)
+    customtkinter.CTkButton(
+        right,
+        text="تأكيد البيع",
+        height=45,
+        command=confirm_sale
+    ).pack(pady=15, padx=10, fill=X)
 
 
 def open_admin(root):
@@ -1371,7 +1798,7 @@ def open_admin(root):
         ("إضافة صنف", open_add_product, add_image),
         ("إضافة للمخزن", open_add_to_storage, storage_image),
         ("بحث وتعديل", open_search_update_page, search_image),
-        ("فاتورة بيع", None, None),
+        ("مبيعات", open_sells_admin, None),
         ("المستخدمين", None, users_image),
         ("التقارير", open_statistics_page, statistics_image),
     ]

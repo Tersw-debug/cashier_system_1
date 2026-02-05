@@ -6,7 +6,7 @@ import os
 
 def show_login(root):
 
-    customtkinter.set_appearance_mode("dark")  # or "dark"
+    customtkinter.set_appearance_mode("Dark")  # or "dark"
     customtkinter.set_default_color_theme("blue")
 
     appearance = customtkinter.get_appearance_mode()
