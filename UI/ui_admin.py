@@ -1526,16 +1526,21 @@ def open_sells_admin():
 
     tree = ttk.Treeview(
         left,
-        columns=("id", "name", "barcode", "price", "qty"),
+        columns=("id","customer_name", "customer_phone","name", "barcode", "price", "qty","debt","amount_paid","total"),
         show="headings"
     )
 
     for col, txt, w in [
         ("id", "ID", 40),
+        ("customer_name", "اسم العميل", 150),
+        ("customer_phone", "رقم التليفون", 100),
         ("name", "الاسم", 150),
         ("barcode", "باركود", 120),
         ("price", "السعر", 80),
-        ("qty", "المخزون", 80),
+        ("qty", "الكمية", 80),
+        ("debt", "الدين", 80),
+        ("amount_paid", "المدفوع", 80),
+        ("total", "الاجمالي", 80),
     ]:
         tree.heading(col, text=txt)
         tree.column(col, width=w, anchor=CENTER)
@@ -1547,7 +1552,7 @@ def open_sells_admin():
         for p in get_products():
             tree.insert("", END, values=(p[0], p[1], p[2], p[3], p[4]))
 
-    load_products()
+    #load_products()
 
     right = customtkinter.CTkFrame(main, fg_color=card_color, corner_radius=15, width=380)
     right.pack(side=RIGHT, fill=Y)
