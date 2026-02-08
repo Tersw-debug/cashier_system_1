@@ -4,63 +4,34 @@ import random
 import string
 import datetime
 
-
 def migrate_db(db_path):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
 
-    # Enable FK support
-    c.execute("PRAGMA foreign_keys = OFF")
+    # Check if column already exists
+    c.execute("PRAGMA table_info(sale_items)")
+    columns = [row[1] for row in c.fetchall()]
 
-    # --- PRODUCTS MIGRATION ---
-    c.execute("""
-        SELECT name FROM sqlite_master
-        WHERE type='table' AND name='inventory_log'
-    """)
-    exists = c.fetchone()
-
-    if exists:
+    if "product_name_at_sale" not in columns:
         c.execute("""
-        ALTER TABLE inventory_log RENAME TO old_inventory_log
-    """)
+            ALTER TABLE sale_items
+            ADD COLUMN product_name_at_sale TEXT
+        """)
+
+        # Optional: backfill existing rows
         c.execute("""
-            CREATE TABLE IF NOT EXISTS inventory_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                product_id INTEGER,
-                created_at TEXT NOT NULL,
-
-                old_price REAL,
-                new_price REAL,
-
-                old_quantity INTEGER,
-                quantity_change INTEGER,   -- +10, -5, etc
-                new_quantity INTEGER,
-
-                action TEXT NOT NULL,       -- 'ADD', 'SALE', 'UPDATE', 'ADJUST'
-                note TEXT,                  -- optional description
-                user_id INTEGER,            -- who made the change
-
-                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            UPDATE sale_items
+            SET product_name_at_sale = (
+                SELECT name FROM products
+                WHERE products.id = sale_items.product_id
             )
+            WHERE product_name_at_sale IS NULL
         """)
-
-        c.execute("""
-            INSERT INTO inventory_log SELECT * FROM old_inventory_log
-        """)
-
-        c.execute("""
-            DROP TABLE old_inventory_log
-        """)
-
-        c.execute("PRAGMA foreign_keys = ON")
 
     conn.commit()
     conn.close()
 
-
-
+    
 class Database:
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))

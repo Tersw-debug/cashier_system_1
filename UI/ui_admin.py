@@ -1505,7 +1505,7 @@ def open_statistics_page():
 
 def open_sells_admin():
     win = Toplevel()
-    win.title("سجل حركة المخزون")
+    win.title("صفحة البيع ")
     win.geometry("900x600")
     win.grab_set()
 
@@ -1526,20 +1526,16 @@ def open_sells_admin():
 
     tree = ttk.Treeview(
         left,
-        columns=("id","customer_name", "customer_phone","name", "barcode", "price", "qty","debt","amount_paid","total"),
+        columns=("id","name", "barcode", "price", "qty","total"),
         show="headings"
     )
 
     for col, txt, w in [
         ("id", "ID", 40),
-        ("customer_name", "اسم العميل", 150),
-        ("customer_phone", "رقم التليفون", 100),
         ("name", "الاسم", 150),
         ("barcode", "باركود", 120),
         ("price", "السعر", 80),
         ("qty", "الكمية", 80),
-        ("debt", "الدين", 80),
-        ("amount_paid", "المدفوع", 80),
         ("total", "الاجمالي", 80),
     ]:
         tree.heading(col, text=txt)
@@ -1547,38 +1543,99 @@ def open_sells_admin():
 
     tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-    def load_products():
-        tree.delete(*tree.get_children())
-        for p in get_products():
-            tree.insert("", END, values=(p[0], p[1], p[2], p[3], p[4]))
-
-    #load_products()
+    
+    
 
     right = customtkinter.CTkFrame(main, fg_color=card_color, corner_radius=15, width=380)
     right.pack(side=RIGHT, fill=Y)
     right.pack_propagate(False)
+
+
     product_id = None
     qty_var = StringVar(value="1")
     paid_var = StringVar()
+    customer_name = StringVar()
+    customer_phone = StringVar()
+    is_customer = BooleanVar(value=False)
+    quantity = StringVar(value="1")
+
+
+    def search_and_add(event=None):
+        value = name_entry.get().strip()
+        if not value:
+            return
+
+        products = get_product_by_name_or_barcode_sells(value)
+
+        if not products:
+            messagebox.showwarning("تنبيه", "المنتج غير موجود")
+            return
+
+        product = products[0]  # take first match
+        add_or_increase_product(product)
+
+        name_entry.delete(0, END)
+
+    def add_or_increase_product(product):
+        product_id, name, barcode, price, stock, _ = product
+
+        for item in tree.get_children():
+            values = tree.item(item, "values")
+            if int(values[0]) == product_id:
+                tree.focus(item)
+                increase_quantity()
+                return
+
+        tree.insert(
+            "",
+            END,
+            values=(product_id, name, barcode, price, 1, price)
+        )
+
+
+    def increase_quantity(event=None):
+        item = tree.focus()
+        if not item:
+            return
+
+        values = list(tree.item(item, "values"))
+
+        price = float(values[3])
+        qty = int(values[4]) + 1
+        total = price * qty
+        paid_var.set(total)
+        qty_var.set(qty)
+        values[4] = qty
+        values[5] = total
+
+        tree.item(item, values=values)
+
+    def delete_selected_item(event=None):
+        item = tree.focus()
+        if not item:
+            return
+        tree.delete(item)
+
 
     def select_product(event):
         nonlocal product_id
         item = tree.focus()
         if not item:
             return
+
         values = tree.item(item, "values")
         product_id = int(values[0])
-        name_entry.delete(0, END)
-        name_entry.insert(0, values[1])
+
+        tree.focus_set()
 
     tree.bind("<<TreeviewSelect>>", select_product)
     name_entry = customtkinter.CTkEntry(
-    right, placeholder_text="اسم المنتج أو الباركود",
-    font=("Arial", 18)
+        right, placeholder_text="اسم المنتج أو الباركود",
+        font=("Arial", 18)
     )
-    name_entry.pack(fill=X, padx=10, pady=5)
+    
 
-    is_customer = BooleanVar(value=False)
+    
 
     customer_frame = customtkinter.CTkFrame(right, fg_color="transparent")
 
@@ -1588,6 +1645,9 @@ def open_sells_admin():
         else:
             customer_frame.pack_forget()
 
+
+    name_entry.pack(fill=X, padx=10, pady=5)
+
     customtkinter.CTkCheckBox(
         right,
         text="عميل",
@@ -1595,37 +1655,29 @@ def open_sells_admin():
         command=toggle_customer,
         font=("Arial", 18)
     ).pack(pady=10)
-    customer_name = StringVar()
-    customer_phone = StringVar()
 
-    customtkinter.CTkEntry(
-        customer_frame,
-        textvariable=customer_name,
-        placeholder_text="اسم العميل",
-        font=("Arial", 18)
-    ).pack(fill=X, pady=5)
 
-    customtkinter.CTkEntry(
-        customer_frame,
-        textvariable=customer_phone,
-        placeholder_text="رقم الهاتف",
-        font=("Arial", 18)
-    ).pack(fill=X, pady=5)
-    customtkinter.CTkEntry(
-        right,
-        textvariable=qty_var,
-        placeholder_text="الكمية",
-        font=("Arial", 18)
-    ).pack(fill=X, padx=10, pady=5)
 
-    customtkinter.CTkEntry(
-        right,
-        textvariable=paid_var,
-        placeholder_text="المبلغ المدفوع",
-        font=("Arial", 18)
-    ).pack(fill=X, padx=10, pady=5)
     def confirm_sale():
         global username
+
+        items = []
+        total_amount = 0.0
+
+        for item in tree.get_children():
+            values = tree.item(item, "values")
+
+            product_id = int(values[0])
+            qty = int(values[4])
+            total = float(values[5])
+
+            items.append((product_id, qty))
+            total_amount += total
+
+        if not items:
+            messagebox.showerror("خطأ", "لا يوجد منتجات في الفاتورة")
+            return
+
         cashier_id = get_user_id(username)
 
         customer_id = None
@@ -1637,18 +1689,33 @@ def open_sells_admin():
 
         ok, msg = Database.sell_product(
             cashier_id=cashier_id,
-            items=[(product_id, int(qty_var.get()))],
-            amount_paid=float(paid_var.get()),
+            items=items,
+            amount_paid=total_amount,
             customer_id=customer_id
         )
 
         messagebox.showinfo("النتيجة", msg)
+
+
+        tree.delete(*tree.get_children())
+        paid_var.set("")
+        qty_var.set("1")
+
+       
     customtkinter.CTkButton(
         right,
         text="تأكيد البيع",
         height=45,
         command=confirm_sale
     ).pack(pady=15, padx=10, fill=X)
+
+
+    tree.bind("<Return>", increase_quantity)
+    tree.bind("<Delete>", delete_selected_item)
+    name_entry.bind("<Return>", lambda e: search_and_add())
+
+
+
 
 
 def open_admin(root):

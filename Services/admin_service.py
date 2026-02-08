@@ -270,6 +270,23 @@ def admin_add_stock(
     conn.commit()
     conn.close()
 
+def get_product_by_name_or_barcode_sells(value):
+    conn = Database.get_connection()
+    c = conn.cursor()
+
+    query = """
+        SELECT id, name, barcode, sell_price, quantity, min_quantity
+        FROM products
+        WHERE name LIKE ? OR barcode = ?
+    """
+
+    params = (f"%{value}%", value)
+
+    c.execute(query, params)
+    data = c.fetchall()
+    conn.close()
+    return data
+
 
 def get_product_by_name_or_barcode(name, barcode):
     conn = Database.get_connection()
