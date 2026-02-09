@@ -434,3 +434,45 @@ def get_or_create_customer(name, phone):
     conn.commit()
     conn.close()
     return cid
+
+
+
+def get_sale_items(sale_id: int):
+
+    conn = Database.get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT product_id, product_name_at_sale, qty, price
+            FROM sale_items
+            WHERE sale_id = ?
+        """, (sale_id,))
+        rows = c.fetchall()
+        if not rows:
+            return []
+
+        result = []
+        for row in rows:
+            result.append({
+                'product_id': row[0],
+                'name': row[1],
+                'qty': row[2],
+                'price': row[3]
+            })
+        return result
+    finally:
+        conn.close()
+
+
+def get_product_by_id(product_id):
+    conn = Database.get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, name, barcode, sell_price, quantity, min_quantity
+            FROM products
+            WHERE id = ?
+        """, (product_id,))
+        return c.fetchone()
+    finally:
+        conn.close()

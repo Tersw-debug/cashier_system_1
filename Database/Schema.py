@@ -4,6 +4,27 @@ import random
 import string
 import datetime
 
+def test(db_path):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+
+    # Check if 'id' column exists
+    c.execute("SELECT * FROM sale_items")
+    data_sale_items = c.fetchall()
+    for row in data_sale_items:
+        print(row)
+    c.execute("SELECT * FROM sales")
+    data_sales = c.fetchall()
+    for row in data_sales:
+        print(row)
+    c.execute("SELECT * FROM customers")
+    data_customers = c.fetchall()
+    for row in data_customers:
+        print(row)
+    conn.commit()
+    conn.close()
+
+
 def migrate_db(db_path):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -37,7 +58,7 @@ class Database:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DB_NAME = os.path.join(BASE_DIR, "shop.db")
 
-    migrate_db(DB_NAME)
+    test(DB_NAME)
 
     @staticmethod
     def get_connection():

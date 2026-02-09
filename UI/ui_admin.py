@@ -409,24 +409,40 @@ def open_search_update_page():
 
     bg_color = ("#ffffff", "#121212") 
     card_color = ("#f8f9fa", "#1e1e1e") 
-    text_color = ("#000000", "#ffffff") 
-    win.configure(bg=bg_color[1] if customtkinter.get_appearance_mode() == "Dark" else bg_color[0])
-    
+    text_color = ("#000000", "#ffffff")         
+    appearance = customtkinter.get_appearance_mode()
+
+    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
+    card = card_color[1] if appearance == "Dark" else card_color[0]
+    text = text_color[1] if appearance == "Dark" else text_color[0]
+
+    win.configure(bg=bg)
 
     style = ttk.Style()
     style.theme_use("default")
 
-    tree_bg = "#1e1e1e"
-    tree_fg = "white"
+    style.configure(
+        "Treeview",
+        background=card,
+        foreground=text,
+        rowheight=35,
+        fieldbackground=card,
+        bordercolor="#333333",
+        font=("Arial", 18)
+    )
 
-    style.configure("Treeview", 
-                    background=tree_bg, 
-                    foreground=tree_fg, 
-                    rowheight=35, 
-                    fieldbackground=tree_bg,
-                    bordercolor="#333333",
-                    font=("Arial", 18))
-    style.map("Treeview", background=[('selected', '#333333')]) 
+    style.configure(
+        "Treeview.Heading",
+        background=bg,
+        foreground=text,
+        font=("Arial", 18, "bold")
+    )
+
+    style.map(
+        "Treeview",
+        background=[("selected", "#333333")],
+        foreground=[("selected", "#ffffff")]
+    )
 
 
     min_qty_var = StringVar()
@@ -823,25 +839,38 @@ def open_statistics_storage_page():
     card_color = ("#f8f9fa", "#1e1e1e") 
     text_color = ("#000000", "#ffffff") 
     appearance = customtkinter.get_appearance_mode()
+
+    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
     card = card_color[1] if appearance == "Dark" else card_color[0]
     text = text_color[1] if appearance == "Dark" else text_color[0]
-    win.configure(bg=bg_color[1] if customtkinter.get_appearance_mode() == "Dark" else bg_color[0])
-    
+
+    win.configure(bg=bg)
 
     style = ttk.Style()
     style.theme_use("default")
 
-    tree_bg = "#1e1e1e"
-    tree_fg = "white"
+    style.configure(
+        "Treeview",
+        background=card,
+        foreground=text,
+        rowheight=35,
+        fieldbackground=card,
+        bordercolor="#333333",
+        font=("Arial", 18)
+    )
 
-    style.configure("Treeview", 
-                    background=tree_bg, 
-                    foreground=tree_fg, 
-                    rowheight=35, 
-                    fieldbackground=tree_bg,
-                    bordercolor="#333333",
-                    font=("Arial", 18))
-    style.map("Treeview", background=[('selected', '#333333')]) 
+    style.configure(
+        "Treeview.Heading",
+        background=bg,
+        foreground=text,
+        font=("Arial", 18, "bold")
+    )
+
+    style.map(
+        "Treeview",
+        background=[("selected", "#333333")],
+        foreground=[("selected", "#ffffff")]
+    )
     
     total_var = StringVar(value="0.00")
     
@@ -1034,25 +1063,38 @@ def open_products_shortage_page():
     card_color = ("#f8f9fa", "#1e1e1e") 
     text_color = ("#000000", "#ffffff") 
     appearance = customtkinter.get_appearance_mode()
+
+    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
     card = card_color[1] if appearance == "Dark" else card_color[0]
     text = text_color[1] if appearance == "Dark" else text_color[0]
-    win.configure(bg=bg_color[1] if customtkinter.get_appearance_mode() == "Dark" else bg_color[0])
-    
+
+    win.configure(bg=bg)
 
     style = ttk.Style()
     style.theme_use("default")
 
-    tree_bg = "#1e1e1e"
-    tree_fg = "white"
+    style.configure(
+        "Treeview",
+        background=card,
+        foreground=text,
+        rowheight=35,
+        fieldbackground=card,
+        bordercolor="#333333",
+        font=("Arial", 18)
+    )
 
-    style.configure("Treeview", 
-                    background=tree_bg, 
-                    foreground=tree_fg, 
-                    rowheight=35, 
-                    fieldbackground=tree_bg,
-                    bordercolor="#333333",
-                    font=("Arial", 18))
-    style.map("Treeview", background=[('selected', '#333333')]) 
+    style.configure(
+        "Treeview.Heading",
+        background=bg,
+        foreground=text,
+        font=("Arial", 18, "bold")
+    )
+
+    style.map(
+        "Treeview",
+        background=[("selected", "#333333")],
+        foreground=[("selected", "#ffffff")]
+    )
     
     total_var = StringVar(value="0.00")
     
@@ -1279,48 +1321,83 @@ def open_inventory_history_page():
 
         c = canvas.Canvas("inventory_history.pdf", pagesize=A4)
         width, height = A4
-        y = height - 40
+        y = height - 45
 
-        c.setFont("Amiri", 15)
-        c.drawRightString(width - 40, y, ar("سجل حركة المخزون"))
+        # ---------- TITLE ----------
+        c.setFont("Amiri", 16)
+        c.drawCentredString(width / 2, y, ar("سجل حركة المخزون"))
         y -= 30
 
-        c.setFont("Amiri", 10)
+        # ---------- TABLE STRUCTURE ----------
+        c.setFont("Amiri", 9)
 
+        columns = [
+            ("ID",          width - 560, lambda r: r[0]),
+            ("الوقت",       width - 460, lambda r: r[1]),
+            ("المنتج",      width - 380, lambda r: r[2]),
+            ("العملية",     width - 340, lambda r: r[3]),
+            ("الكمية قبل",  width - 280, lambda r: r[4]),
+            ("التغير",      width - 230, lambda r: r[5]),
+            ("الكمية بعد",  width - 180, lambda r: r[6]),
+            ("السعر قبل",   width - 130, lambda r: f"{r[7]:.2f}" if r[7] is not None else ""),
+            ("السعر بعد",   width - 80,  lambda r: f"{r[8]:.2f}" if r[8] is not None else ""),
+            ("ملاحظة",      width - 20,  lambda r: r[9]),
+        ]
+
+        # ---------- HEADER ----------
+        for title, x, _ in columns:
+            c.drawRightString(x, y, ar(title))
+
+        y -= 12
+        c.line(20, y, width - 20, y)
+        y -= 12
+
+        # ---------- ROWS ----------
         for r in rows:
-            line = (
-                f"{rtl_safe(r[3]):>8}   "
-                f"{rtl_safe(r[6]):>6}   "
-                f"{rtl_safe(r[5]):>6}   "
-                f"{rtl_safe(r[2]):>18}   "
-                f"{rtl_safe(r[1]):>16}"
-            )
+            for _, x, getter in columns:
+                c.drawRightString(x, y, rtl_safe(getter(r)))
 
-            c.drawRightString(width - 40, y, line)
-            y -= 18
+            y -= 16
 
             if y < 60:
                 c.showPage()
-                c.setFont("Amiri", 10)
-                y = height - 40
+                c.setFont("Amiri", 9)
+                y = height - 45
 
         c.save()
         messagebox.showinfo("تم", "تم تصدير ملف PDF بنجاح")
+
+        
+   
+    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
+    card = card_color[1] if appearance == "Dark" else card_color[0]
+    text = text_color[1] if appearance == "Dark" else text_color[0]
+
     style = ttk.Style()
     style.theme_use("default")
 
-    tree_bg = "#1e1e1e"
-    tree_fg = "white"
-
     style.configure(
         "Treeview",
-        background=tree_bg,
-        foreground=tree_fg,
-        rowheight=32,
-        fieldbackground=tree_bg,
-        font=("Arial", 16)
+        background=card,
+        foreground=text,
+        rowheight=35,
+        fieldbackground=card,
+        bordercolor="#333333",
+        font=("Arial", 18)
     )
-    style.map("Treeview", background=[('selected', '#333333')])
+
+    style.configure(
+        "Treeview.Heading",
+        background=bg,
+        foreground=text,
+        font=("Arial", 18, "bold")
+    )
+
+    style.map(
+        "Treeview",
+        background=[("selected", "#333333")],
+        foreground=[("selected", "#ffffff")]
+    )
 
     columns = (
         "id",
@@ -1469,7 +1546,13 @@ def open_statistics_page():
     win.title("التقارير")
     win.geometry("500x600")
     win.grab_set()
-    win.configure(bg="#3a4247")
+
+    bg_color = ("#ffffff", "#121212")
+    card_color = ("#f8f9fa", "#1e1e1e")
+    text_color = ("#000000", "#ffffff")
+
+    appearance = customtkinter.get_appearance_mode()
+    win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
 
     win.grid_columnconfigure(0, weight=1)
     win.grid_columnconfigure(1, weight=1)
@@ -1512,8 +1595,12 @@ def open_sells_admin():
     bg_color = ("#ffffff", "#121212")
     card_color = ("#f8f9fa", "#1e1e1e")
     text_color = ("#000000", "#ffffff")
+   
 
     appearance = customtkinter.get_appearance_mode()
+    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
+    card = card_color[1] if appearance == "Dark" else card_color[0]
+    text = text_color[1] if appearance == "Dark" else text_color[0]
     win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
 
     main = customtkinter.CTkFrame(win, fg_color="transparent")
@@ -1521,8 +1608,37 @@ def open_sells_admin():
 
 
     # ================= LEFT (SALE FORM) =================
-    left = customtkinter.CTkFrame(main, fg_color=card_color, corner_radius=15)
+    left = customtkinter.CTkFrame(main, fg_color=card, corner_radius=15)
     left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
+
+
+    
+
+    style = ttk.Style()
+    style.theme_use("default")
+
+    style.configure(
+        "Treeview",
+        background=card,
+        foreground=text,
+        rowheight=35,
+        fieldbackground=card,
+        bordercolor="#333333",
+        font=("Arial", 18)
+    )
+
+    style.configure(
+        "Treeview.Heading",
+        background=bg,
+        foreground=text,
+        font=("Arial", 18, "bold")
+    )
+
+    style.map(
+        "Treeview",
+        background=[("selected", "#333333")],
+        foreground=[("selected", "#ffffff")]
+    )
 
     tree = ttk.Treeview(
         left,
@@ -1546,7 +1662,7 @@ def open_sells_admin():
     
     
 
-    right = customtkinter.CTkFrame(main, fg_color=card_color, corner_radius=15, width=380)
+    right = customtkinter.CTkFrame(main, fg_color=card, corner_radius=15, width=380)
     right.pack(side=RIGHT, fill=Y)
     right.pack_propagate(False)
 
@@ -1556,8 +1672,8 @@ def open_sells_admin():
     paid_var = StringVar()
     customer_name = StringVar()
     customer_phone = StringVar()
+    customer_paid_var = StringVar()
     is_customer = BooleanVar(value=False)
-    quantity = StringVar(value="1")
 
 
     def search_and_add(event=None):
@@ -1576,20 +1692,30 @@ def open_sells_admin():
 
         name_entry.delete(0, END)
 
-    def add_or_increase_product(product):
+    def add_or_increase_product(product, qty=1):
         product_id, name, barcode, price, stock, _ = product
 
         for item in tree.get_children():
-            values = tree.item(item, "values")
+            values = list(tree.item(item, "values"))
             if int(values[0]) == product_id:
-                tree.focus(item)
-                increase_quantity()
+                new_qty = int(values[4]) + qty
+                total = new_qty * float(values[3])
+                values[4] = new_qty
+                values[5] = f"{total:.2f}"
+                tree.item(item, values=values)
                 return
 
         tree.insert(
             "",
             END,
-            values=(product_id, name, barcode, price, 1, price)
+            values=(
+                product_id,
+                name,
+                barcode,
+                f"{price:.2f}",
+                qty,
+                f"{price * qty:.2f}"
+            )
         )
 
 
@@ -1604,9 +1730,8 @@ def open_sells_admin():
         qty = int(values[4]) + 1
         total = price * qty
         paid_var.set(total)
-        qty_var.set(qty)
         values[4] = qty
-        values[5] = total
+        values[5] = f"{total:.2f}"
 
         tree.item(item, values=values)
 
@@ -1635,15 +1760,22 @@ def open_sells_admin():
     )
     
 
-    
+   
 
-    customer_frame = customtkinter.CTkFrame(right, fg_color="transparent")
 
     def toggle_customer():
         if is_customer.get():
-            customer_frame.pack(fill=X, padx=10, pady=5)
+            customer_frame.pack(
+                before=confirmation_button,
+                fill=X,
+                padx=15,
+                pady=10
+            )
         else:
             customer_frame.pack_forget()
+            customer_name.set("")
+            customer_phone.set("")
+            customer_paid_var.set("")
 
 
     name_entry.pack(fill=X, padx=10, pady=5)
@@ -1656,10 +1788,71 @@ def open_sells_admin():
         font=("Arial", 18)
     ).pack(pady=10)
 
+    customer_frame = customtkinter.CTkFrame(right, fg_color="transparent")
 
+    
+
+
+    customerNameEntry = customtkinter.CTkEntry(
+        customer_frame,
+        textvariable=customer_name,
+        placeholder_text= "",
+        font=("Arial", 18)
+    )
+    
+    customerPhoneEntry = customtkinter.CTkEntry(
+        customer_frame,
+        textvariable=customer_phone,
+        placeholder_text= "رقم العميل",
+        font=("Arial", 18)
+    )
+    
+    paid_amount = customtkinter.CTkEntry(
+        customer_frame,
+        textvariable=customer_paid_var,
+        placeholder_text= "المبلغ المدفوع",
+        font=("Arial", 18)
+    )
+
+    customtkinter.CTkLabel(
+        customer_frame,
+        text="اسم العميل",
+        font=("Arial", 18)
+    ).pack(fill=X, padx=10, pady=5)
+
+    customerNameEntry.pack(fill=X, padx=10, pady=5)
+
+    customtkinter.CTkLabel(
+        customer_frame,
+        text="رقم العميل",
+        font=("Arial", 18)
+    ).pack(fill=X, padx=10, pady=5)
+
+    customerPhoneEntry.pack(fill=X, padx=10, pady=5)
+
+    customtkinter.CTkLabel(
+        customer_frame,
+        text="المبلغ المدفوع",
+        font=("Arial", 18)
+    ).pack(fill=X, padx=10, pady=5)
+    paid_amount.pack(fill=X, padx=10, pady=5)
 
     def confirm_sale():
         global username
+
+        if is_customer.get():
+            if not customer_name.get().strip():
+                messagebox.showerror("خطأ", "يرجى إدخال اسم العميل")
+                return
+
+            if not customer_phone.get().strip():
+                messagebox.showerror("خطأ", "يرجى إدخال رقم العميل")
+                return
+
+            if not customer_paid_var.get().strip():
+                messagebox.showerror("خطأ", "يرجى إدخال المبلغ المدفوع")
+                return
+
 
         items = []
         total_amount = 0.0
@@ -1667,11 +1860,11 @@ def open_sells_admin():
         for item in tree.get_children():
             values = tree.item(item, "values")
 
-            product_id = int(values[0])
+            pid = int(values[0])
             qty = int(values[4])
             total = float(values[5])
 
-            items.append((product_id, qty))
+            items.append((pid, qty))
             total_amount += total
 
         if not items:
@@ -1686,11 +1879,11 @@ def open_sells_admin():
                 customer_name.get().strip(),
                 customer_phone.get().strip()
             )
-
+        amount_paid = float(customer_paid_var.get()) if is_customer.get() else total_amount
         ok, msg = Database.sell_product(
             cashier_id=cashier_id,
             items=items,
-            amount_paid=total_amount,
+            amount_paid=amount_paid,
             customer_id=customer_id
         )
 
@@ -1698,17 +1891,92 @@ def open_sells_admin():
 
 
         tree.delete(*tree.get_children())
-        paid_var.set("")
-        qty_var.set("1")
+        customer_paid_var.set("")
+        customer_name.set("")
+        customer_phone.set("")
+        is_customer.set(False)
+        customer_frame.pack_forget()
 
+    def restore_sale():
+        sale_id_input = customtkinter.CTkInputDialog(text=":ادخل رقم البيع",title="استرجاع البيع")
+
+
+        try:
+            sale_id = int(sale_id_input.get_input())
+        except (ValueError, TypeError):
+            messagebox.showerror("خطأ", "رقم البيع غير صالح")
+            return
+
+        cashier_id = get_user_id(username)  # make sure 'username' is defined
+
+        # Fetch items
+        items = get_sale_items(sale_id)
+        if not items:
+            messagebox.showerror("خطأ", f"لا يوجد بيع بالرقم {sale_id}")
+            return
+
+        
        
-    customtkinter.CTkButton(
+        conn = Database.get_connection()
+        try:
+            c = conn.cursor()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            for item in items:
+                # Update stock
+                c.execute("UPDATE products SET quantity = quantity + ? WHERE id=?", (item['qty'], item['product_id']))
+
+                # Log inventory restoration
+                c.execute("""INSERT INTO inventory_log
+                             (product_id, created_at, old_price, new_price, old_quantity, quantity_change, new_quantity, action, user_id, note)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (item['product_id'], now, item['price'], item['price'], 0, item['qty'], 0,
+                           "RESTORE", cashier_id, f"Restored sale ID {sale_id}"))
+                
+                products = get_product_by_id(item['product_id'])
+                print(products)
+                if products:
+                    tree.insert(
+                        "",
+                        END,
+                        values=(
+                            products[0],          # product_id
+                            products[1],          # name
+                            products[2],          # barcode
+                            f"{item['price']:.2f}",
+                            item['qty'],
+                            f"{item['price'] * item['qty']:.2f}"
+                        )
+                    )
+                
+           # c.execute("DELETE FROM sale_items WHERE sale_id=?", (sale_id,))
+           # c.execute("DELETE FROM sales WHERE id=?", (sale_id,))
+
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 4️⃣ Now the inventory is as if nothing was sold
+        messagebox.showinfo("نجاح", f"تم استرجاع البيع ID {sale_id}. يمكنك الآن تعديل وإعادة البيع.")
+       
+    confirmation_button = customtkinter.CTkButton(
         right,
-        text="تأكيد البيع",
+        text=" البيع تأكيد",
         height=45,
         command=confirm_sale
-    ).pack(pady=15, padx=10, fill=X)
+    )
 
+    confirmation_button.pack(pady=15, padx=10, fill=X)
+
+    restore_button = customtkinter.CTkButton(
+        right,
+        text="المشتريات استرجاع",
+        height=45,
+        command=restore_sale
+    )
+
+    restore_button.pack(pady=15, padx=10, fill=X)
 
     tree.bind("<Return>", increase_quantity)
     tree.bind("<Delete>", delete_selected_item)
