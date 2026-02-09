@@ -1561,7 +1561,9 @@ def open_statistics_page():
         ("ارصدة النواقص", open_products_shortage_page),
         ("ارصدة المخزن", open_statistics_storage_page),
         ("سجل حركة المخزون", open_inventory_history_page),
-        
+        # TO DO  1 - customers log
+        #        2 - sale_items
+        #        3 - sales
     ]
 
     row = col = 0
@@ -2196,7 +2198,7 @@ def open_admin(root):
         ("إضافة للمخزن", open_add_to_storage, storage_image),
         ("بحث وتعديل", open_search_update_page, search_image),
         ("مبيعات", open_sells_admin, None),
-        ("المستخدمين", None, users_image),
+        ("المستخدمين", None, users_image), # USERS
         ("التقارير", open_statistics_page, statistics_image),
     ]
 
