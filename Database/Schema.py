@@ -17,6 +17,7 @@ def test(db_path):
     data_sales = c.fetchall()
     for row in data_sales:
         print(row)
+    c.execute("DELETE FROM customers WHERE id = 1")
     c.execute("SELECT * FROM customers")
     data_customers = c.fetchall()
     for row in data_customers:

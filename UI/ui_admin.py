@@ -1897,12 +1897,38 @@ def open_sells_admin():
         is_customer.set(False)
         customer_frame.pack_forget()
 
-    def restore_sale():
-        sale_id_input = customtkinter.CTkInputDialog(text=":ادخل رقم البيع",title="استرجاع البيع")
+    def open_restore_dialog():
+        dialog = customtkinter.CTkToplevel()
+        dialog.title("استرجاع بيع")
+        dialog.geometry("400x250")
+        dialog.grab_set()
 
+        customtkinter.CTkLabel(dialog, text="رقم البيع").pack(pady=(20, 5))
+        sale_id_entry = customtkinter.CTkEntry(dialog)
+        sale_id_entry.pack(pady=5)
+
+        customtkinter.CTkLabel(dialog, text="اسم العميل (اختياري)").pack(pady=(15, 5))
+        customer_entry = customtkinter.CTkEntry(dialog)
+        customer_entry.pack(pady=5)
+
+        def submit():
+            restore_sale(
+                sale_id_entry.get(),
+                customer_entry.get().strip(),
+                dialog
+            )
+
+        customtkinter.CTkButton(
+            dialog,
+            text="استرجاع",
+            command=submit
+        ).pack(pady=20)
+
+
+    def restore_sale(sale_id_input, customer_name_input, dialog):
 
         try:
-            sale_id = int(sale_id_input.get_input())
+            sale_id = int(sale_id_input)
         except (ValueError, TypeError):
             messagebox.showerror("خطأ", "رقم البيع غير صالح")
             return
@@ -1921,9 +1947,11 @@ def open_sells_admin():
         try:
             c = conn.cursor()
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            total_amount = 0
 
             for item in items:
-                # Update stock
+                total_amount += item['price'] * item['qty']
+
                 c.execute("UPDATE products SET quantity = quantity + ? WHERE id=?", (item['qty'], item['product_id']))
 
                 # Log inventory restoration
@@ -1948,9 +1976,38 @@ def open_sells_admin():
                             f"{item['price'] * item['qty']:.2f}"
                         )
                     )
+            if customer_name_input:
+                print(customer_name_input)
+                c.execute("SELECT id FROM customers WHERE name = ?", (customer_name_input,))
                 
-           # c.execute("DELETE FROM sale_items WHERE sale_id=?", (sale_id,))
-           # c.execute("DELETE FROM sales WHERE id=?", (sale_id,))
+                row = c.fetchone()
+                if not row:
+                    messagebox.showerror("خطأ", "العميل غير موجود")
+                    return
+
+                customer_id = row[0]
+
+                c.execute("""
+                    SELECT amount_paid, total 
+                    FROM sales 
+                    WHERE id = ? AND customer_id = ?
+                """, (sale_id, customer_id,))
+
+                row = c.fetchone()
+                if not row:
+                    messagebox.showerror("خطأ", "هذا البيع لا يخص هذا العميل")
+                    return
+
+                amount_paid, total = row
+                
+                c.execute("""
+                    UPDATE customers SET current_debt = current_debt - ? WHERE name = ?
+                """, ((total - amount_paid), customer_name_input,))
+
+
+
+            c.execute("DELETE FROM sale_items WHERE sale_id=?", (sale_id,))
+            c.execute("DELETE FROM sales WHERE id=?", (sale_id,))
 
 
             conn.commit()
@@ -1973,7 +2030,7 @@ def open_sells_admin():
         right,
         text="المشتريات استرجاع",
         height=45,
-        command=restore_sale
+        command=open_restore_dialog
     )
 
     restore_button.pack(pady=15, padx=10, fill=X)
