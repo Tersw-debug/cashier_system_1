@@ -811,7 +811,7 @@ def open_search_update_page():
 
     customtkinter.CTkButton(
         buttons_frame,
-        text="حفظ التعديلات", 
+        text="التعديلات حفظ", 
         fg_color=("#000000", "#ffffff"), 
         text_color=("#ffffff", "#000000"), 
         hover_color="#333333",
@@ -2041,6 +2041,284 @@ def open_sells_admin():
     tree.bind("<Delete>", delete_selected_item)
     name_entry.bind("<Return>", lambda e: search_and_add())
 
+def open_users_controll():
+    win = Toplevel()
+    win.title("المستخدمين")
+    win.geometry("1100x750") # Slightly wider for better breathing room
+    win.grid_columnconfigure(0, weight=2)
+    win.grid_columnconfigure(1, weight=1)
+
+    bg_color = ("#ffffff", "#121212") 
+    card_color = ("#f8f9fa", "#1e1e1e") 
+    text_color = ("#000000", "#ffffff")         
+    appearance = customtkinter.get_appearance_mode()
+
+    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
+    card = card_color[1] if appearance == "Dark" else card_color[0]
+    text = text_color[1] if appearance == "Dark" else text_color[0]
+
+    win.configure(bg=bg)
+
+    style = ttk.Style()
+    style.theme_use("default")
+
+    style.configure(
+        "Treeview",
+        background=card,
+        foreground=text,
+        rowheight=35,
+        fieldbackground=card,
+        bordercolor="#333333",
+        font=("Arial", 18)
+    )
+
+    style.configure(
+        "Treeview.Heading",
+        background=bg,
+        foreground=text,
+        font=("Arial", 18, "bold")
+    )
+
+    style.map(
+        "Treeview",
+        background=[("selected", "#333333")],
+        foreground=[("selected", "#ffffff")]
+    )
+
+
+
+    def searchProduct(event=None): 
+        name = nameEntry.get().strip()
+        password = passwordEntry.get().strip()
+
+       
+        if not name and not password:
+            # again to do handle loading users
+            return
+
+        # to do handle searching for user
+        #products = get_product_by_name_or_barcode(name, barcode)
+        #load_results(products)
+
+
+    def deleteProduct():
+        global username
+        if not selected_product_id:
+            messagebox.showwarning("تنبيه", "من فضلك اختر منتج أولاً")
+            return
+
+        confirm = messagebox.askyesno(
+            "تأكيد الحذف",
+            "هل أنت متأكد من حذف هذا المنتج نهائيًا؟\nسيتم تسجيل العملية في سجل المخزون."
+        )
+
+        if not confirm:
+            return
+
+        try:
+            # again to do handle deleting user
+
+            messagebox.showinfo("تم", "تم حذف المنتج بنجاح")
+
+            # refresh UI # again to do load all users
+
+            # clear fields
+            nameEntry.delete(0, END)
+            passwordEntry.delete(0, END)
+
+
+        except Exception as e:
+            messagebox.showerror("خطأ", str(e))
+
+        
+
+
+
+    main_container = customtkinter.CTkFrame(win, fg_color="transparent")
+    main_container.pack(fill=BOTH, expand=True, padx=20, pady=20)
+
+
+    leftFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, corner_radius=15)
+    leftFrame.pack(side=LEFT, fill=BOTH, expand=TRUE, padx=(0, 10))
+
+    selected_product_id = None
+    def on_select(event):
+        nonlocal selected_product_id
+
+        selected = tree.focus()
+        if not selected:
+            return
+
+        values = tree.item(selected, "values")
+
+        selected_product_id = values[0]
+
+        nameEntry.delete(0, END)
+        nameEntry.insert(0, values[1])
+
+        passwordEntry.delete(0, END)
+        passwordEntry.insert(0, values[2])
+
+        
+
+
+    def load_results(products):
+        tree.delete(*tree.get_children())
+        for p in products:
+            tree.insert("", END, values=p)
+    # to do handle loading all users
+    #def load_all_products():
+    #    products_from_database = get_products()
+    #    load_results(products_from_database)
+
+
+    columns = ("id", "name", "password")
+
+    tree = ttk.Treeview(leftFrame, columns=columns, show="headings")
+
+    tree.heading("id", text="ID")
+    tree.heading("name", text="الاسم")
+    tree.heading("password", text="كلمة المرور")
+
+
+    tree.column("id", width=50, anchor=CENTER)
+    tree.column("name", width=150)
+    tree.column("password", width=120)
+
+
+    tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+    tree.bind("<<TreeviewSelect>>", on_select)
+
+    # to do handle loading all users
+
+    rightFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, width=350, corner_radius=15)
+    rightFrame.pack(side=RIGHT, fill=Y, padx=(10, 0))
+
+    def update_product():
+        global username
+        if not selected_product_id:
+            messagebox.showwarning("Error", "No product selected")
+            return
+        name = nameEntry.get().strip()
+        password = passwordEntry.get().strip()
+        # to do
+        # handle updating users info
+        
+        messagebox.showinfo("Success", "Product updated")
+   
+
+
+    def on_name_enter(event):
+        name = nameEntry.get().strip()
+        if name:
+            products = get_product_by_name_or_barcode(name, "")  # empty barcode
+            load_results(products)
+    
+
+    customtkinter.CTkLabel(
+        rightFrame,
+        text=" الوقت ",
+        width=150,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        text_color=text_color,
+        corner_radius=8,
+        font=("Arial", 20)
+    ).grid(row=0, column=1,sticky="ew" ,padx=5, pady=5)
+    dateEntry = customtkinter.CTkEntry(
+        rightFrame,
+        font=("Arial", 22),
+        width=250,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        border_color=("#000000", "#ffffff"),
+        justify=CENTER
+    )
+    dateEntry.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+
+
+    dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    customtkinter.CTkLabel(
+        rightFrame,
+        text="اسم المستخدم",
+        width=150,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        text_color=text_color,
+        corner_radius=8,
+        font=("Arial", 20)
+    ).grid(row=1, column=1,sticky="ew" ,padx=5, pady=5)
+    nameEntry = customtkinter.CTkEntry(
+        rightFrame,
+        font=("Arial", 22),
+        width=250,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        border_color=("#000000", "#ffffff"),
+        justify=CENTER
+    )
+    nameEntry.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+
+
+    customtkinter.CTkLabel(
+        rightFrame,
+        text=" كلمة المرور ",
+        width=150,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        text_color=text_color,
+        corner_radius=8,
+        font=("Arial", 20)
+    ).grid(row=2, column=1,sticky="ew" ,padx=5, pady=5)
+    passwordEntry = customtkinter.CTkEntry(
+        rightFrame,
+        font=("Arial", 22),
+        width=250,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        border_color=("#000000", "#ffffff"),
+        justify=CENTER
+    )
+    passwordEntry.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
+
+
+
+    buttons_frame = customtkinter.CTkFrame(rightFrame)
+    buttons_frame.grid(
+        row=3,
+        column=0,
+        columnspan=2,
+        sticky="ew",
+        pady=15
+    )
+
+    buttons_frame.grid_columnconfigure(0, weight=1)
+
+    customtkinter.CTkButton(
+        buttons_frame,
+        text=" مسح ",
+        height=50,
+        fg_color=("#000000", "#ffffff"), 
+        text_color=("#ffffff", "#000000"),
+        hover_color="#333333",
+        command=deleteProduct
+    ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+
+    customtkinter.CTkButton(
+        buttons_frame,
+        text="التعديلات حفظ", 
+        fg_color=("#000000", "#ffffff"), 
+        text_color=("#ffffff", "#000000"), 
+        hover_color="#333333",
+        height=50,
+        command=update_product
+    ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+
+
+    nameEntry.bind("<Return>", on_name_enter)
+    nameEntry.bind("<KeyRelease>", lambda event: searchProduct())
 
 
 
@@ -2198,7 +2476,7 @@ def open_admin(root):
         ("إضافة للمخزن", open_add_to_storage, storage_image),
         ("بحث وتعديل", open_search_update_page, search_image),
         ("مبيعات", open_sells_admin, None),
-        ("المستخدمين", None, users_image), # USERS
+        ("المستخدمين", open_users_controll, users_image), # USERS
         ("التقارير", open_statistics_page, statistics_image),
     ]
 
