@@ -476,3 +476,45 @@ def get_product_by_id(product_id):
         return c.fetchone()
     finally:
         conn.close()
+
+
+def get_all_users():
+    conn = Database.get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, username, password, role FROM users
+        """)
+        data = c.fetchall()
+        return data
+    finally:
+        conn.close()
+
+def add_user(username, password, role):
+    conn = Database.get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO users (username, password, role) VALUES (?,?,?)
+        """, (username, password, role))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+
+def search_user(username):
+    conn = Database.get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id ,username, password, role FROM users WHERE username LIKE ?
+        """, (username))
+        data = c.fetchall()
+        return data
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()

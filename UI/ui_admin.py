@@ -2085,20 +2085,34 @@ def open_users_controll():
         foreground=[("selected", "#ffffff")]
     )
 
-
-
-    def searchProduct(event=None): 
+    def add_user(event=None):
         name = nameEntry.get().strip()
         password = passwordEntry.get().strip()
+        role = roleEntry.get().strip()
+
+        if None not in (name, password, role):
+            messagebox.showerror("معلومات ناقصة", "رجاء قم بادخال جميع البيانات المطلوبة")
+            return
+        new_user = add_user(name, password, role)
+        if new_user:
+            messagebox.showinfo("نجاح", "تم انشاء مستخدم جديد!")
+        else:
+            messagebox.showerror("خطا", "لقد حدث خطا بالنظام رجاءا قم بالمحاولة في وقت لاحق")
+
+        load_all_users()
+
+    def searchUser(event=None): 
+        name = nameEntry.get().strip()
 
        
-        if not name and not password:
+        if not name:
             # again to do handle loading users
+            load_all_users()
             return
 
         # to do handle searching for user
-        #products = get_product_by_name_or_barcode(name, barcode)
-        #load_results(products)
+        products = search_user(name)
+        load_results(products)
 
 
     def deleteProduct():
@@ -2159,6 +2173,8 @@ def open_users_controll():
         passwordEntry.delete(0, END)
         passwordEntry.insert(0, values[2])
 
+        roleEntry.delete(0, END)
+        roleEntry.insert(0, values[3])
         
 
 
@@ -2167,23 +2183,25 @@ def open_users_controll():
         for p in products:
             tree.insert("", END, values=p)
     # to do handle loading all users
-    #def load_all_products():
-    #    products_from_database = get_products()
-    #    load_results(products_from_database)
+    def load_all_users():
+        users_from_database = get_all_users()
+        load_results(users_from_database)
 
 
-    columns = ("id", "name", "password")
+    columns = ("id", "name", "password", "role")
 
     tree = ttk.Treeview(leftFrame, columns=columns, show="headings")
 
     tree.heading("id", text="ID")
     tree.heading("name", text="الاسم")
     tree.heading("password", text="كلمة المرور")
+    tree.heading("role", text="الوظيفة")
 
 
     tree.column("id", width=50, anchor=CENTER)
-    tree.column("name", width=150)
-    tree.column("password", width=120)
+    tree.column("name", width=150 , anchor=CENTER)
+    tree.column("password", width=120 , anchor=CENTER)
+    tree.column("role", width=120 , anchor=CENTER)
 
 
     tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
@@ -2191,6 +2209,7 @@ def open_users_controll():
     tree.bind("<<TreeviewSelect>>", on_select)
 
     # to do handle loading all users
+    load_all_users()
 
     rightFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, width=350, corner_radius=15)
     rightFrame.pack(side=RIGHT, fill=Y, padx=(10, 0))
@@ -2198,14 +2217,14 @@ def open_users_controll():
     def update_product():
         global username
         if not selected_product_id:
-            messagebox.showwarning("Error", "No product selected")
+            messagebox.showwarning("Error", "No user selected")
             return
         name = nameEntry.get().strip()
         password = passwordEntry.get().strip()
         # to do
         # handle updating users info
         
-        messagebox.showinfo("Success", "Product updated")
+        messagebox.showinfo("Success", "User updated")
    
 
 
@@ -2282,12 +2301,34 @@ def open_users_controll():
         justify=CENTER
     )
     passwordEntry.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
+    
+    
+    customtkinter.CTkLabel(
+        rightFrame,
+        text=" الوظيفة ",
+        width=150,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        text_color=text_color,
+        corner_radius=8,
+        font=("Arial", 20)
+    ).grid(row=3, column=1,sticky="ew" ,padx=5, pady=5)
+    roleEntry = customtkinter.CTkEntry(
+        rightFrame,
+        font=("Arial", 22),
+        width=250,
+        height=50,
+        fg_color=("#ffffff", "#2b2b2b"),
+        border_color=("#000000", "#ffffff"),
+        justify=CENTER
+    )
+    roleEntry.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
 
 
 
     buttons_frame = customtkinter.CTkFrame(rightFrame)
     buttons_frame.grid(
-        row=3,
+        row=4,
         column=0,
         columnspan=2,
         sticky="ew",
@@ -2296,15 +2337,16 @@ def open_users_controll():
 
     buttons_frame.grid_columnconfigure(0, weight=1)
 
+
     customtkinter.CTkButton(
         buttons_frame,
-        text=" مسح ",
-        height=50,
+        text="اضافة مستخدم", 
         fg_color=("#000000", "#ffffff"), 
-        text_color=("#ffffff", "#000000"),
+        text_color=("#ffffff", "#000000"), 
         hover_color="#333333",
-        command=deleteProduct
-    ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+        height=50,
+        command=add_user
+    ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
     customtkinter.CTkButton(
         buttons_frame,
@@ -2314,11 +2356,23 @@ def open_users_controll():
         hover_color="#333333",
         height=50,
         command=update_product
-    ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+    ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+
+    customtkinter.CTkButton(
+        buttons_frame,
+        text=" مسح ",
+        height=50,
+        fg_color=("#000000", "#ffffff"), 
+        text_color=("#ffffff", "#000000"),
+        hover_color="#333333",
+        command=deleteProduct
+    ).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
+
+    
 
 
     nameEntry.bind("<Return>", on_name_enter)
-    nameEntry.bind("<KeyRelease>", lambda event: searchProduct())
+    nameEntry.bind("<KeyRelease>", lambda event: searchUser())
 
 
 
