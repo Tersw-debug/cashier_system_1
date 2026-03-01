@@ -2021,7 +2021,7 @@ def open_sells_admin():
        
     confirmation_button = customtkinter.CTkButton(
         right,
-        text=" البيع تأكيد",
+        text="البيع تأكيد",
         height=45,
         command=confirm_sale
     )
@@ -2530,12 +2530,16 @@ def open_admin(root):
         size=(50, 50)
     )
 
+    admin_sells_image = customtkinter.CTkImage(
+        Image.open(os.path.join(ASSETS_DIR, "money.png")),
+        size=(50, 50)
+    )
 
     buttons = [
         ("إضافة صنف", open_add_product, add_image),
         ("إضافة للمخزن", open_add_to_storage, storage_image),
         ("بحث وتعديل", open_search_update_page, search_image),
-        ("مبيعات", open_sells_admin, None),
+        ("مبيعات", open_sells_admin, admin_sells_image),
         ("المستخدمين", open_users_controll, users_image), # USERS
         ("التقارير", open_statistics_page, statistics_image),
     ]

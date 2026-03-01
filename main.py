@@ -12,7 +12,7 @@ Database.migration_check(1)
 Database.add_default_users()
 
 
-
+#pyinstaller main.py --onefile --add-data "UI/assets;UI/assets"  --windowed --collect-all pyzbar
 
 root = BaseWindow("Log In")
 

@@ -235,9 +235,7 @@ class Database:
         conn.commit()
         conn.close()
 
-        Database.seed_default_products(200)
-        Database.seed_default_shortage(200)
-        schema_version()
+        
     @staticmethod
     def seed_default_products(count=200):
         conn = Database.get_connection()
