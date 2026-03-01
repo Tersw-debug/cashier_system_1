@@ -2115,7 +2115,7 @@ def open_users_controll():
         load_results(products)
 
 
-    def deleteProduct():
+    def deleteUser():
         global username
         if not selected_product_id:
             messagebox.showwarning("تنبيه", "من فضلك اختر منتج أولاً")
@@ -2365,7 +2365,7 @@ def open_users_controll():
         fg_color=("#000000", "#ffffff"), 
         text_color=("#ffffff", "#000000"),
         hover_color="#333333",
-        command=deleteProduct
+        command=deleteUser
     ).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
 
     

@@ -1,13 +1,22 @@
-import sqlite3
+from sqlcipher3 import dbapi2 as sqlite3
 import os
 import random
 import string
 import datetime
+import secrets
+import keyring
+from tkinter import messagebox
+import hashlib
+from dotenv import load_dotenv
 
+SERVICES_NAME = "myapp"
+USERNAME = "admin"
+
+
+load_dotenv()
 def test(db_path):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
-
     # Check if 'id' column exists
     c.execute("SELECT * FROM sale_items")
     data_sale_items = c.fetchall()
@@ -25,51 +34,103 @@ def test(db_path):
     conn.commit()
     conn.close()
 
+def run_migration(conn, current_version, target_version):
+    pass
 
-def migrate_db(db_path):
-    conn = sqlite3.connect(db_path)
+
+
+def schema_version():
+    conn = Database.get_connection()
     c = conn.cursor()
-
-    # Check if column already exists
-    c.execute("PRAGMA table_info(sale_items)")
-    columns = [row[1] for row in c.fetchall()]
-
-    if "product_name_at_sale" not in columns:
-        c.execute("""
-            ALTER TABLE sale_items
-            ADD COLUMN product_name_at_sale TEXT
-        """)
-
-        # Optional: backfill existing rows
-        c.execute("""
-            UPDATE sale_items
-            SET product_name_at_sale = (
-                SELECT name FROM products
-                WHERE products.id = sale_items.product_id
-            )
-            WHERE product_name_at_sale IS NULL
-        """)
-
-    conn.commit()
+    c.execute("""
+        SELECT * FROM metadata;
+    """)
+    data = c.fetchall()
+    for row in data:
+        print(row)
     conn.close()
 
-    
+def set_credentials():
+    try:
+        
+        password = secrets.token_urlsafe(64)
+        keyring.set_password(SERVICES_NAME, USERNAME, password)
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to set Credentials {e}")
+        return None
+
+
+def get_credentials(service_name, username):
+    try:
+        password = keyring.get_password(service_name, username)
+        return password
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to get password {e}")
+        return None
+
 class Database:
 
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DB_NAME = os.path.join(BASE_DIR, "shop.db")
+    app_data = os.path.join(os.getenv("APPDATA"), "MyShop")
+    os.makedirs(app_data, exist_ok=True)
 
-    test(DB_NAME)
+    DB_NAME = os.path.join(app_data, "shop.db")
+    
 
     @staticmethod
     def get_connection():
+        secert = get_credentials(SERVICES_NAME, USERNAME)
+        if secert == None:
+            set_credentials()
+            secert = get_credentials(SERVICES_NAME, USERNAME)
+        key = hashlib.sha256((secert).encode()).hexdigest()
+        
         conn = sqlite3.connect(Database.DB_NAME)
         conn.execute("PRAGMA foreign_keys = ON")
+        
+        conn.execute(f"PRAGMA key = '{key}';")
         return conn
+    
+    @staticmethod
+    def ensure_metadata_table(conn):
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        """)
+        conn.commit()
 
     @staticmethod
-    def init_db():
+    def migration_check(app_version):
         conn = Database.get_connection()
+        c = conn.cursor()
+
+        Database.ensure_metadata_table(conn)
+
+        c.execute("""
+            SELECT value FROM metadata WHERE key = 'schema_version'
+        """)
+        row = c.fetchone()
+        if row is None:
+            Database.init_db(conn)
+            c.execute("INSERT INTO metadata (key, value) VALUES (?, ?)",
+                ("schema_version", str(app_version)))
+            conn.commit()
+            conn.close()
+            return
+        db_version = float(row[0])
+
+        if db_version < app_version:
+            run_migration(conn, db_version, app_version)
+        elif db_version > app_version:
+            conn.close()
+            raise Exception("Database version newer than application.")
+        # to do
+        # we need to make schema hash here
+        conn.close()
+    @staticmethod
+    def init_db(conn):
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS products (
@@ -148,12 +209,16 @@ class Database:
                 FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL -- Safe
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        """)
         conn.commit()
-        conn.close()
 
-        Database.seed_default_products(200)
-        Database.seed_default_shortage(200)
-
+        
+    
     @staticmethod
     def add_default_users():
         conn = Database.get_connection()
@@ -169,6 +234,10 @@ class Database:
                 pass
         conn.commit()
         conn.close()
+
+        Database.seed_default_products(200)
+        Database.seed_default_shortage(200)
+        schema_version()
     @staticmethod
     def seed_default_products(count=200):
         conn = Database.get_connection()
@@ -183,22 +252,40 @@ class Database:
 
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        products = []
+
         for i in range(1, count + 1):
-            products.append((
+            temp = round(random.uniform(5, 500), 2)
+            qty = random.randint(20, 100)
+
+            c.execute("""
+                INSERT INTO products
+                (created_at, name, barcode, sell_price, quantity, min_quantity)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
                 now,
                 f"Product {i}",
                 f"BC{random.randint(10**9, 10**10-1)}",
-                round(random.uniform(5, 500), 2),
-                random.randint(20, 100),
+                temp,
+                qty,
                 random.randint(1, 10)
             ))
 
-        c.executemany("""
-            INSERT INTO products
-            (created_at, name, barcode, sell_price, quantity, min_quantity)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, products)
+            product_id = c.lastrowid  # ✅ REAL ID from database
+            c.execute("SELECT id FROM users WHERE username = ?", ("admin",))
+            user_id = c.fetchone()[0]
+            c.execute("""
+                INSERT INTO inventory_log
+                (created_at, product_id, old_price, old_quantity, action, user_id, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                now,
+                product_id,
+                temp,
+                qty,
+                "ADD",
+                int(user_id),
+                "ADDED BY DEFAULT"
+            ))
 
         conn.commit()
         conn.close()
@@ -217,25 +304,46 @@ class Database:
 
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        products = []
         for i in range(1, count + 1):
-            products.append((
+            temp = round(random.uniform(5, 500), 2)
+            qty = random.randint(20, 100)
+            c.execute("""
+                    INSERT INTO products
+                    (created_at, name, barcode, sell_price, quantity, min_quantity)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
                 now,
                 f"Productmkmakd_on_short {i}",
                 f"BC{random.randint(10**9, 10**10-1)}",
-                round(random.uniform(5, 500), 2),
-                random.randint(1, 10),
+                temp,
+                qty,
                 random.randint(10, 90)
+            )
+
+            product_id = c.lastrowid
+            c.execute("SELECT id FROM users WHERE username = ?", ("admin",))
+            user_id = c.fetchone()[0]
+
+            c.execute("""
+                INSERT INTO inventory_log
+                (created_at, product_id, old_price, old_quantity, action, user_id, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                now,
+                product_id,
+                temp,
+                qty,
+                "ADD",
+                int(user_id),
+                "ADDED BY DEFAULT"
             ))
 
-        c.executemany("""
-            INSERT INTO products
-            (created_at, name, barcode, sell_price, quantity, min_quantity)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, products)
 
         conn.commit()
         conn.close()
+
+    #test(DB_NAME)
+    
 
     @staticmethod
     def add_stock(product_id, added_qty, new_price=None, user_id=None, note=None):
