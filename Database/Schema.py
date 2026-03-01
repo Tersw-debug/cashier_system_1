@@ -164,7 +164,7 @@ class Database:
                 old_quantity INTEGER,
                 quantity_change INTEGER,   -- +10, -5, etc
                 new_quantity INTEGER,
-
+                is_unlimited BOOLEAN DEFAULT 0,
                 action TEXT NOT NULL,       -- 'ADD', 'SALE', 'UPDATE', 'ADJUST'
                 note TEXT,                  -- optional description
                 user_id INTEGER,            -- who made the change

@@ -36,15 +36,18 @@ def add_product(created_at, name, barcode, price, qty, min_qty=5, user_id=None):
         """, (created_at, name, barcode, price, qty, min_qty))
 
         product_id = c.lastrowid
-
+        if qty:
+            un_limited = False
+        else:
+            un_limited = True
         # 🔹 log inventory
         c.execute("""
             INSERT INTO inventory_log
             (product_id, created_at,
              old_price, new_price,
              old_quantity, quantity_change, new_quantity,
-             action, note, user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             action, note,is_unlimited ,user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ? ,?)
         """, (
             product_id,
             created_at,
@@ -52,6 +55,7 @@ def add_product(created_at, name, barcode, price, qty, min_qty=5, user_id=None):
             0, qty, qty,
             "ADD",
             "إضافة منتج جديد",
+            un_limited,
             user_id
         ))
 
@@ -92,13 +96,17 @@ def update_product_data(
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Convert
-    new_qty = int(new_qty)
-    price = float(price)
-    min_qty = int(min_qty)
+    try:
+        price = float(price)
+        min_qty = int(min_qty) if min_qty else 0
+        new_qty = int(new_qty) if new_qty else 0
 
-    # Detect quantity change
+    except ValueError:
+        conn.close()
+        raise ValueError("Invalid numeric input")
+
+    old_qty = old_qty or 0
     qty_diff = new_qty - old_qty
-
     # Update product
     c.execute("""
         UPDATE products
@@ -109,20 +117,24 @@ def update_product_data(
     # Log changes
     if qty_diff != 0 or price != old_price:
         action = "ADJUST" if qty_diff != 0 else "UPDATE"
-
+        if old_qty:
+            unlimited = False
+        else:
+            unlimited = True
         c.execute("""
             INSERT INTO inventory_log
             (product_id, created_at,
              old_price, new_price,
              old_quantity, quantity_change, new_quantity,
-             action, note, user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             action, note,is_unlimited, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
         """, (
             pid, now,
             old_price, price,
             old_qty, qty_diff, new_qty,
             action,
             "تعديل يدوي من صفحة البحث",
+            unlimited,
             user_id
         ))
 
@@ -362,6 +374,7 @@ def get_inventory_history(from_date=None, to_date=None):
             il.old_quantity,
             il.quantity_change,
             il.new_quantity,
+            il.is_unlimited,
             il.old_price,
             il.new_price,
             il.note

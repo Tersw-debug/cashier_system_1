@@ -76,14 +76,14 @@ def open_add_product():
         qty = qty_var.get().strip()
         min_qty = min_qty_var.get().strip()
 
-        if not all([created_at, name, barcode, price, qty, min_qty]):
-            messagebox.showerror("خطأ", "جميع الحقول مطلوبة")
+        if not all([name, price]):
+            messagebox.showerror("خطأ", "برجاء ادخال الحقول المطلوبة")
             return
 
         try:
             price = float(price)
-            qty = int(qty)
-            min_qty = int(min_qty)
+            qty = int(qty) if qty else 0
+            min_qty = int(min_qty) if min_qty else 0
         except ValueError:
             messagebox.showerror("خطأ", "السعر أو الكمية غير صحيحة")
             return
@@ -198,7 +198,8 @@ def open_add_product():
 
 
 
-
+# to do
+# handle the following that is if item is unlimited do not show it in options
 def open_add_to_storage():
     win = Toplevel()
     win.title("إضافة الي المخزن")
@@ -1288,7 +1289,7 @@ def open_inventory_history_page():
 
     appearance = customtkinter.get_appearance_mode()
     win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
-
+    # needs to be updated
     def export_excel():
         rows = get_inventory_history(
             from_var.get() or None,
@@ -1301,7 +1302,7 @@ def open_inventory_history_page():
 
         headers = [
             "ID", "Date", "Product", "Action",
-            "Old Qty", "Change", "New Qty",
+            "Old Qty", "Change", "New Qty", "infinite",
             "Old Price", "New Price", "Note"
         ]
         ws.append(headers)
@@ -1313,6 +1314,7 @@ def open_inventory_history_page():
         wb.save(filename)
 
         messagebox.showinfo("تم", "تم تصدير ملف Excel بنجاح")
+    # needs to be updated
     def export_pdf():
         rows = get_inventory_history(
             from_var.get() or None,
@@ -1407,6 +1409,7 @@ def open_inventory_history_page():
         "old_qty",
         "change",
         "new_qty",
+        "infinite",
         "old_price",
         "new_price",
         "note"
@@ -1463,6 +1466,7 @@ def open_inventory_history_page():
     tree.heading("old_qty", text="الكمية قبل")
     tree.heading("change", text="التغير")
     tree.heading("new_qty", text="الكمية بعد")
+    tree.heading("infinite", text="كمية غير محدودة")
     tree.heading("old_price", text="السعر قبل")
     tree.heading("new_price", text="السعر بعد")
     tree.heading("note", text="ملاحظة")
@@ -1474,6 +1478,7 @@ def open_inventory_history_page():
     tree.column("old_qty", width=90, anchor=CENTER)
     tree.column("change", width=90, anchor=CENTER)
     tree.column("new_qty", width=90, anchor=CENTER)
+    tree.column("infinite", width=90, anchor=CENTER)
     tree.column("old_price", width=90, anchor=CENTER)
     tree.column("new_price", width=90, anchor=CENTER)
     tree.column("note", width=200)
@@ -1499,10 +1504,10 @@ def open_inventory_history_page():
         for r in rows:
             tree.insert("", END, values=(
                 r[0], r[1], r[2], r[3],
-                r[4], r[5], r[6],
-                f"{r[7]:.2f}" if r[7] is not None else "",
+                r[4], r[5], r[6],r[7],
                 f"{r[8]:.2f}" if r[8] is not None else "",
-                r[9] or ""
+                f"{r[9]:.2f}" if r[9] is not None else "",
+                r[10] or ""
             ))
 
     customtkinter.CTkButton(
@@ -1587,7 +1592,8 @@ def open_statistics_page():
             row += 1
 
 
-
+# to do
+# handle that if item is un limited there's no restricting on selling
 def open_sells_admin():
     win = Toplevel()
     win.title("صفحة البيع ")
