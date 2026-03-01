@@ -511,10 +511,40 @@ def search_user(username):
         c = conn.cursor()
         c.execute("""
             SELECT id ,username, password, role FROM users WHERE username LIKE ?
-        """, (username))
+        """,  (f"%{username}%",))
         data = c.fetchall()
         return data
     except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def update_user(username, password, role, id):
+    conn = Database.get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE users 
+            SET username = ?, password = ?, role = ? 
+            WHERE id = ?
+        """,(username,password, role, id))
+        conn.commit()
+        return True
+    except:
+        return False
+    finally:
+        conn.close()
+
+def delete_user(id):
+    conn = Database.get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            DELETE FROM users WHERE id = ?
+        """,(id,))
+        conn.commit()
+        return True
+    except:
         return False
     finally:
         conn.close()

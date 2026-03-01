@@ -2056,6 +2056,7 @@ def open_users_controll():
     bg = bg_color[1] if appearance == "Dark" else bg_color[0]
     card = card_color[1] if appearance == "Dark" else card_color[0]
     text = text_color[1] if appearance == "Dark" else text_color[0]
+    user_id = None
 
     win.configure(bg=bg)
 
@@ -2085,12 +2086,12 @@ def open_users_controll():
         foreground=[("selected", "#ffffff")]
     )
 
-    def add_user(event=None):
+    def handel_add_user(event=None):
         name = nameEntry.get().strip()
         password = passwordEntry.get().strip()
         role = roleEntry.get().strip()
 
-        if None not in (name, password, role):
+        if not name or not password or not role:
             messagebox.showerror("معلومات ناقصة", "رجاء قم بادخال جميع البيانات المطلوبة")
             return
         new_user = add_user(name, password, role)
@@ -2116,8 +2117,8 @@ def open_users_controll():
 
 
     def deleteUser():
-        global username
-        if not selected_product_id:
+        nonlocal user_id
+        if not user_id:
             messagebox.showwarning("تنبيه", "من فضلك اختر منتج أولاً")
             return
 
@@ -2131,14 +2132,17 @@ def open_users_controll():
 
         try:
             # again to do handle deleting user
-
-            messagebox.showinfo("تم", "تم حذف المنتج بنجاح")
-
+            deleteUserResponse = delete_user(user_id)
+            if deleteUserResponse:
+                messagebox.showinfo("تم", "تم حذف المنتج بنجاح")
+            else:
+                messagebox.showerror("خطا", "لقد حدث خطا ما بالرجاء محاولة في وقت لاحق")
             # refresh UI # again to do load all users
 
             # clear fields
             nameEntry.delete(0, END)
             passwordEntry.delete(0, END)
+            roleEntry.delete(0, END)
 
 
         except Exception as e:
@@ -2155,9 +2159,10 @@ def open_users_controll():
     leftFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, corner_radius=15)
     leftFrame.pack(side=LEFT, fill=BOTH, expand=TRUE, padx=(0, 10))
 
-    selected_product_id = None
+
+    
     def on_select(event):
-        nonlocal selected_product_id
+        nonlocal user_id
 
         selected = tree.focus()
         if not selected:
@@ -2165,7 +2170,7 @@ def open_users_controll():
 
         values = tree.item(selected, "values")
 
-        selected_product_id = values[0]
+        user_id = values[0]
 
         nameEntry.delete(0, END)
         nameEntry.insert(0, values[1])
@@ -2216,14 +2221,15 @@ def open_users_controll():
 
     def update_product():
         global username
-        if not selected_product_id:
+        if not user_id:
             messagebox.showwarning("Error", "No user selected")
             return
         name = nameEntry.get().strip()
         password = passwordEntry.get().strip()
+        role = roleEntry.get().strip()
         # to do
         # handle updating users info
-        
+        update_user_info = update_user(name, password, role, user_id)
         messagebox.showinfo("Success", "User updated")
    
 
@@ -2231,8 +2237,8 @@ def open_users_controll():
     def on_name_enter(event):
         name = nameEntry.get().strip()
         if name:
-            products = get_product_by_name_or_barcode(name, "")  # empty barcode
-            load_results(products)
+            user = search_user(name)  # empty barcode
+            load_results(user)
     
 
     customtkinter.CTkLabel(
@@ -2340,12 +2346,12 @@ def open_users_controll():
 
     customtkinter.CTkButton(
         buttons_frame,
-        text="اضافة مستخدم", 
+        text="مستخدم اضافة", 
         fg_color=("#000000", "#ffffff"), 
         text_color=("#ffffff", "#000000"), 
         hover_color="#333333",
         height=50,
-        command=add_user
+        command=handel_add_user
     ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
     customtkinter.CTkButton(
