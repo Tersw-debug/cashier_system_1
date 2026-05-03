@@ -97,14 +97,14 @@ Built using a modular architecture in **Python + CustomTkinter + SQLite (SQLCiph
 ## 🧱 Project Architecture
 
 The system follows a layered architecture:
-
+```
 📦 Project Root
 ├── UI/ → User Interface (Tkinter / CustomTkinter)
 ├── Services/ → Business Logic Layer
 ├── Domain/ → Core Models (Product, Cart, Sale)
 ├── Database/ → Database Schema & Connection
 ├── Infrastructure/ → External integrations (future expansion)
-
+```
 
 ---
 
@@ -128,6 +128,7 @@ Handles:
 ---
 
 ## 📂 Project Structure
+```
 .
 ├── main.py
 ├── UI/
@@ -158,7 +159,7 @@ Handles:
 └── reports/
 ├── inventory_history.pdf
 └── storage_report.pdf
-
+```
 
 ---
 
