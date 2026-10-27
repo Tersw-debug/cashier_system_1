@@ -6,11 +6,12 @@ not the legacy Database.get_connection() API.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
+import re
 import os
 from datetime import date, datetime
 from typing import Any
+from .security import PasswordHasher
 
 from Database.Schema import db
 
@@ -27,10 +28,10 @@ RESOURCE_CONFIG: dict[str, dict[str, Any]] = {
                   COALESCE((SELECT GROUP_CONCAT(pb.barcode, ', ') FROM product_barcodes pb WHERE pb.product_id=p.id),''),
                   p.cost_price, p.sell_price,
                   COALESCE((SELECT SUM(sl.quantity) FROM stock_levels sl WHERE sl.product_id=p.id),0),
-                  p.min_quantity, p.track_stock, p.is_active, COALESCE(t.name,'')
+                  p.min_quantity, p.track_stock, p.is_active, COALESCE(t.name,''), COALESCE(p.color,'')
              FROM products p LEFT JOIN sections s ON s.id=p.section_id
              LEFT JOIN units u ON u.id=p.unit_id LEFT JOIN tax_rates t ON t.id=p.tax_rate_id""",
-        "columns": ["ID", "SKU", "اسم المنتج", "القسم", "الوحدة", "الباركود", "التكلفة (وحدة صغرى)", "سعر البيع (وحدة صغرى)", "المخزون", "حد التنبيه", "تتبع المخزون", "نشط", "الضريبة"],
+        "columns": ["ID", "SKU", "اسم المنتج", "القسم", "الوحدة", "الباركود", "التكلفة (وحدة صغرى)", "سعر البيع (وحدة صغرى)", "المخزون", "حد التنبيه", "تتبع المخزون", "نشط", "اللون","الضريبة"],
         "search": ["p.sku", "p.name", "p.description", "s.name"],
     },
     "sections": {"title": "الأقسام", "editable": True,
@@ -351,14 +352,9 @@ def _hash_password(password: str) -> str:
 
 
 def verify_admin_password(password: str, encoded: str) -> bool:
-    try:
-        algorithm, rounds, salt_hex, digest_hex = encoded.split("$", 3)
-        if algorithm != "pbkdf2_sha256":
-            return False
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(rounds))
-        return hmac.compare_digest(digest.hex(), digest_hex)
-    except (ValueError, TypeError):
-        return False
+    if len(password) < 10:
+        raise ValueError("كلمة المرور يجب ألا تقل عن 10 أحرف")
+    return PasswordHasher.hash(password)
 
 
 def save_entity(resource: str, values: dict[str, Any], record_id: int | str | None = None,
@@ -393,6 +389,16 @@ def save_entity(resource: str, values: dict[str, Any], record_id: int | str | No
         existing = _fetch_one("SELECT name,is_system FROM roles WHERE id=?", (record_id,))
         if existing and existing[1] and cooked.get("name") != existing[0]:
             raise ValueError("لا يمكن تغيير اسم دور نظامي")
+    if resource == "products":
+        color = (cooked.get("color") or "").strip()
+        if color:
+            if not color.startswith("#"):
+                color = "#" + color
+            if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+                raise ValueError("اللون يجب أن يكون بصيغة #RRGGBB مثل #1F6AA5")
+            cooked["color"] = color.upper()
+        else:
+            cooked["color"] = None
     audit_payload = {k: v for k, v in cooked.items() if k not in {"password", "password_hash"}}
     with db.transaction() as c:
         old_values = _snapshot(c, resource, record_id) if record_id is not None else None

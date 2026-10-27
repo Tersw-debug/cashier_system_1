@@ -2,20 +2,10 @@ from tkinter import *
 import customtkinter
 from Services.admin_service import *
 from UI.router import go_login
-import cv2
-from pyzbar.pyzbar import decode
 from tkinter import messagebox
-from Domain.product import Product
-from datetime import datetime
-from tkinter import ttk
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-import arabic_reshaper
-from bidi.algorithm import get_display
-from PIL import Image
+import customtkinter as ctk
 import os
-import re
-import openpyxl
+
 from .sell_ui import build_sell_ui
 
 
@@ -80,8 +70,29 @@ def open_cashier(root, username):
     content.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
     # 🔥 HERE IS THE MAGIC
-    build_sell_ui(content, username)
+    """  try:
+        initialized = build_sell_ui(content, username)
+    except Exception as exc:
+        messagebox.showerror(
+            "تعذر فتح الكاشير",
+            f"{type(exc).__name__}: {exc}",
+            parent=root,
+        )
+        initialized = False
 
+    if not initialized:
+        # Don't leave an empty POS area.
+        for widget in content.winfo_children():
+            widget.destroy()
+
+        ctk.CTkLabel(
+            content,
+            text="تعذر تحميل نقطة البيع. راجع رسالة الخطأ ثم حاول مرة أخرى.",
+            font=("Segoe UI", 16),
+            wraplength=600,
+        ).pack(padx=20, pady=30) """
+
+    build_sell_ui(content, username)
     # ===== BOTTOM BAR =====
     bottom = customtkinter.CTkFrame(
         cashier,

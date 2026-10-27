@@ -15,9 +15,21 @@ class PasswordHasher:
     @classmethod
     def verify(cls, password: str, stored: str) -> bool:
         try:
-            _, salt_hex, digest_hex = stored.split("$")
-            digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex),
-                                    n=cls.N, r=cls.R, p=cls.P)
+            scheme, *parts = stored.split("$")
+            if scheme == "scrypt":
+                salt_hex, digest_hex = parts
+                digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex),
+                                        n=cls.N, r=cls.R, p=cls.P)
+            elif scheme == "pbkdf2_sha256":          # written by the old admin-page code
+                rounds, salt_hex, digest_hex = parts
+                digest = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                             bytes.fromhex(salt_hex), int(rounds))
+            else:
+                return False
             return hmac.compare_digest(digest.hex(), digest_hex)
-        except Exception:
+        except (ValueError, TypeError):
             return False
+
+    @classmethod
+    def needs_rehash(cls, stored: str) -> bool:
+        return not stored.startswith("scrypt$")

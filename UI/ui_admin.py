@@ -118,9 +118,54 @@ def _field_default(field):
     return date.today().isoformat() if default == "today" else default
 
 
+class ColorField(ctk.CTkFrame):
+    """Hex entry + preview swatch + color chooser. Exposes get() like an entry."""
+
+    def __init__(self, master, initial=""):
+        super().__init__(master, fg_color="transparent")
+        self.grid_columnconfigure(0, weight=1)
+        self._entry = ctk.CTkEntry(self, height=34, placeholder_text="#RRGGBB")
+        self._entry.grid(row=0, column=0, sticky="ew")
+        self._swatch = ctk.CTkLabel(self, text="", width=34, height=34, corner_radius=6, fg_color="transparent")
+        self._swatch.grid(row=0, column=1, padx=(6, 0))
+        ctk.CTkButton(self, text="اختيار", width=70, height=34, command=self._pick).grid(row=0, column=2, padx=(6, 0))
+        ctk.CTkButton(self, text="مسح", width=60, height=34, fg_color="#6b7280", command=self.clear).grid(row=0, column=3, padx=(6, 0))
+        if initial:
+            self._entry.insert(0, str(initial))
+        self._entry.bind("<KeyRelease>", lambda _e: self._update_swatch())
+        self._update_swatch()
+
+    def get(self):
+        return self._entry.get()
+
+    def clear(self):
+        self._entry.delete(0, "end")
+        self._update_swatch()
+
+    def _valid(self):
+        v = self._entry.get().strip()
+        if v and not v.startswith("#"):
+            v = "#" + v
+        ok = len(v) == 7 and all(ch in "0123456789abcdefABCDEF" for ch in v[1:])
+        return v if ok else None
+
+    def _update_swatch(self):
+        self._swatch.configure(fg_color=self._valid() or "transparent")
+
+    def _pick(self):
+        from tkinter import colorchooser
+        _rgb, hexcode = colorchooser.askcolor(color=self._valid(), parent=self.winfo_toplevel(), title="اختر لون المنتج")
+        if hexcode:
+            self._entry.delete(0, "end")
+            self._entry.insert(0, hexcode.upper())
+            self._update_swatch()
+
+
 def _make_choice_widget(parent, field, current):
     """Returns (widget, display->database value map)."""
     name = field["name"]
+    if name == "color":
+        return ColorField(parent, current or ""), {}
     values = []
     display_to_value = {}
     supplied_choices = field.get("choice_values")
@@ -156,7 +201,7 @@ def _make_choice_widget(parent, field, current):
         widget.set(str(current if current not in (None, "") else field.get("default", enum_values[0])))
         return widget, {v: v for v in enum_values}
 
-    widget = ctk.CTkEntry(parent, height=34, show="*" if field.get("secret") else "")
+    widget = ctk.CTkEntry(parent, height=34, justify="right", show="*" if field.get("secret") else "")
     if current not in (None, ""):
         widget.insert(0, str(current))
     elif _field_default(field) not in (None, ""):
@@ -185,7 +230,7 @@ def _prompt_form(title: str, fields: list[dict], on_submit, record: dict | None 
 
     ctk.CTkLabel(win, text=title, font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(padx=18, pady=(16, 8))
     if note:
-        ctk.CTkLabel(win, text=note, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=590, justify="left").pack(fill="x", padx=18, pady=(0, 10))
+        ctk.CTkLabel(win, text=note, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=590, justify="right", anchor="e").pack(fill="x", padx=18, pady=(0, 10))
     body = ctk.CTkScrollableFrame(win, fg_color=colors["card"], corner_radius=12)
     body.pack(fill="both", expand=True, padx=18, pady=8)
     body.grid_columnconfigure(0, weight=1)
@@ -251,7 +296,7 @@ def _open_entity_editor(resource: str, record_id=None, refresh_callback=None):
     title = ("إضافة " if record_id is None else "تعديل ") + svc.RESOURCE_CONFIG[resource]["title"]
     note = None
     if resource == "products":
-        note = "الكميات لا تُعدّل من بطاقة المنتج؛ استخدم تسوية المخزون أو التحويل حتى يظل دفتر حركة المخزون هو المصدر الصحيح. الأسعار والمبالغ تُخزن بوحدة العملة الصغرى وفق المخطط."
+        note = "الكميات لا تُعدّل من بطاقة المنتج؛ استخدم تسوية المخزون أو التحويل حتى يظل دفتر حركة المخزون هو المصدر الصحيح. الأسعار والمبالغ تُخزن بوحدة العملة الصغرى وفق المخطط. لون المنتج اختياري ويظهر على زر المنتج في صفحة الكاشير."
     elif resource == "users":
         note = "لا يتم عرض كلمة المرور المحفوظة. صيغة كلمات المرور الجديدة هنا PBKDF2-SHA256؛ تأكد أن خدمة تسجيل الدخول تستخدم verify_admin_password من Services.admin_service."
     elif resource == "warehouses":
@@ -627,7 +672,7 @@ def open_resource_window(resource: str):
     toolbar = ctk.CTkFrame(win, fg_color="transparent")
     toolbar.pack(fill="x", padx=16, pady=4)
     search_var = tk.StringVar()
-    search_entry = ctk.CTkEntry(toolbar, textvariable=search_var, placeholder_text="بحث...", width=280, height=34)
+    search_entry = ctk.CTkEntry(toolbar, textvariable=search_var, placeholder_text="بحث...", width=280, height=34, justify="right")
     search_entry.pack(side="right", padx=4)
 
     table_frame = ctk.CTkFrame(win, fg_color=colors["card"], corner_radius=10)
@@ -635,14 +680,17 @@ def open_resource_window(resource: str):
     tree_holder = tk.Frame(table_frame, bd=0, highlightthickness=0, bg=colors["card"])
     tree_holder.pack(fill="both", expand=True, padx=8, pady=8)
     columns = [f"c{i}" for i in range(len(cfg["columns"]))]
-    tree = ttk.Treeview(tree_holder, columns=columns, show="headings", style="Admin.Treeview")
+    # RTL: display columns in reverse order (first column, usually ID, on the right).
+    # Item values keep their original order, so vals[0] is still the record ID.
+    tree = ttk.Treeview(tree_holder, columns=columns, displaycolumns=columns[::-1],
+                        show="headings", style="Admin.Treeview")
     vscroll = ttk.Scrollbar(tree_holder, orient="vertical", command=tree.yview)
     hscroll = ttk.Scrollbar(tree_holder, orient="horizontal", command=tree.xview)
     tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-    tree.grid(row=0, column=0, sticky="nsew")
-    vscroll.grid(row=0, column=1, sticky="ns")
-    hscroll.grid(row=1, column=0, sticky="ew")
-    tree_holder.rowconfigure(0, weight=1); tree_holder.columnconfigure(0, weight=1)
+    vscroll.grid(row=0, column=0, sticky="ns")
+    tree.grid(row=0, column=1, sticky="nsew")
+    hscroll.grid(row=1, column=1, sticky="ew")
+    tree_holder.rowconfigure(0, weight=1); tree_holder.columnconfigure(1, weight=1)
     for idx, heading in enumerate(cfg["columns"]):
         tree.heading(columns[idx], text=heading)
         tree.column(columns[idx], width=min(240, max(90, len(str(heading)) * 11)), anchor="center", stretch=True)
@@ -688,6 +736,8 @@ def open_resource_window(resource: str):
     _resource_action_buttons(resource, toolbar, refresh, tree)
     tree.bind("<Double-1>", lambda _e: _open_entity_editor(resource, _parse_record_id(resource, _selected_row(tree)[0]), refresh) if cfg.get("editable") and _selected_row(tree) else None)
     refresh()
+    # RTL: start scrolled to the right edge so the first (rightmost) columns are visible.
+    win.after(100, lambda: tree.xview_moveto(1.0))
     return win
 
 
@@ -792,7 +842,8 @@ def open_admin(root):
     stat_labels = {}
     for i, (key, label, resource) in enumerate(stats_config):
         card = ctk.CTkFrame(cards_frame, fg_color=colors["card"], corner_radius=12, border_width=1, border_color=colors["border"])
-        card.grid(row=i // 3, column=i % 3, sticky="nsew", padx=6, pady=6)
+        # RTL: fill each row of cards starting from the right.
+        card.grid(row=i // 3, column=2 - (i % 3), sticky="nsew", padx=6, pady=6)
         ctk.CTkLabel(card, text=label, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=190).pack(padx=12, pady=(14, 4))
         value = ctk.CTkLabel(card, text="—", font=("Segoe UI", 23, "bold"), text_color=colors["text"])
         value.pack(padx=12, pady=(0, 6))
