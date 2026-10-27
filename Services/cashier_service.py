@@ -224,7 +224,7 @@ def get_cashier_products(query: str = "", warehouse_id: int | None = None) -> li
                 p.sell_price,{stock_expr},p.min_quantity,p.track_stock,p.cost_price,
                 COALESCE((SELECT tr.rate_bp FROM tax_rates tr
                           WHERE tr.id=p.tax_rate_id AND tr.is_active=1),0),
-                COALESCE(s.name,'')
+                COALESCE(s.name,''),p.color
              FROM products p LEFT JOIN sections s ON s.id=p.section_id
              WHERE p.is_active=1"""
     if query:

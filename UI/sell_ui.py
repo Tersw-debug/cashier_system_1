@@ -274,17 +274,9 @@ def build_sell_ui(parent, username):
         placeholder_text="امسح الباركود أو ابحث باسم المنتج / SKU",
         font=("Arial", 14),
         height=38,
+        justify="right",
     )
     search_entry.pack(side=RIGHT, fill=X, expand=True, padx=(0, 6))
-    qty_entry = ctk.CTkEntry(
-        search_frame,
-        textvariable=qty_var,
-        width=65,
-        placeholder_text="الكمية",
-        justify=CENTER,
-        height=38,
-    )
-    qty_entry.pack(side=RIGHT, padx=5)
     add_button = ctk.CTkButton(search_frame, text="إضافة", width=75, height=38)
     add_button.pack(side=LEFT)
 
@@ -506,6 +498,79 @@ def build_sell_ui(parent, username):
         elif not paid_var.get().strip():
             paid_var.set(minor_to_money(0))
 
+    def ask_product_quantity(product, on_confirm=None):
+        """Ask for a product quantity before adding it to the cart."""
+        dialog = ctk.CTkToplevel(top)
+        dialog.title("تحديد الكمية")
+        dialog.geometry("360x220")
+        dialog.resizable(False, False)
+        dialog.transient(top)
+        dialog.grab_set()
+
+        product_name = str(product[1])
+        ctk.CTkLabel(
+            dialog,
+            text=f"المنتج: {product_name}",
+            font=("Arial", 14, "bold"),
+            anchor="e",
+            justify="right",
+            wraplength=320,
+        ).pack(fill=X, padx=16, pady=(18, 8))
+
+        ctk.CTkLabel(
+            dialog,
+            text="أدخل الكمية المطلوبة:",
+            font=("Arial", 13),
+            anchor="e",
+            justify="right",
+        ).pack(fill=X, padx=16, pady=(0, 5))
+
+        quantity_var = StringVar(value="1")
+        quantity_entry = ctk.CTkEntry(
+            dialog,
+            textvariable=quantity_var,
+            justify="center",
+            height=38,
+        )
+        quantity_entry.pack(fill=X, padx=16, pady=4)
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill=X, padx=16, pady=(12, 14))
+
+        def confirm_quantity():
+            try:
+                qty = _quantity(quantity_var.get())
+            except ValueError as exc:
+                messagebox.showerror(
+                    "كمية غير صحيحة",
+                    str(exc),
+                    parent=dialog,
+                )
+                quantity_entry.focus_set()
+                return
+
+            quantity_text = _qty_text(qty)
+
+            dialog.grab_release()
+            dialog.destroy()
+
+            if on_confirm is not None:
+                on_confirm(product, quantity_text)
+            else:
+                add_product_to_cart(product, quantity_text)
+
+        ctk.CTkButton(
+            buttons, text="إضافة للسلة", command=confirm_quantity
+        ).pack(side=RIGHT, padx=(4, 0))
+        ctk.CTkButton(
+            buttons, text="إلغاء", fg_color="#555555",
+            hover_color="#444444", command=dialog.destroy
+        ).pack(side=LEFT, padx=(0, 4))
+
+        quantity_entry.bind("<Return>", lambda _event: confirm_quantity())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.after(100, quantity_entry.focus_set)
+
     def add_product_to_cart(product, raw_qty="1"):
         try:
             qty = _quantity(raw_qty)
@@ -525,9 +590,9 @@ def build_sell_ui(parent, username):
         search_var.set("")
         search_entry.focus_set()
 
-    def choose_product(products, raw_qty):
+    def choose_product(products, raw_qty=None):
         if len(products) == 1:
-            add_product_to_cart(products[0], raw_qty)
+            ask_product_quantity(products[0])
             return
         picker = ctk.CTkToplevel(parent)
         picker.title("اختر الصنف")
@@ -539,6 +604,10 @@ def build_sell_ui(parent, username):
         ).pack(pady=8)
         scroller = ctk.CTkScrollableFrame(picker)
         scroller.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        def select_from_picker(product):
+            picker.destroy()
+            ask_product_quantity(product)
+
         for product in products:
             label = (
                 f"{product[1]} | {product[3] or product[2] or '-'} | "
@@ -548,9 +617,7 @@ def build_sell_ui(parent, username):
                 scroller,
                 text=label,
                 anchor="e",
-                command=lambda p=product: (
-                    add_product_to_cart(p, raw_qty), picker.destroy()
-                ),
+                command=lambda p=product: select_from_picker(p),
             ).pack(fill=X, pady=3)
 
     def search_and_add(event=None):
@@ -676,8 +743,11 @@ def build_sell_ui(parent, username):
                 anchor="e",
             ).pack(fill=X, padx=5, pady=(10, 3))
             for product in products:
+
                 btn_text = f"{product[1]}\n{minor_to_money(product[4])}"
+
                 color = _valid_hex(product[11]) if len(product) > 11 else None
+
                 ctk.CTkButton(
                     quick_scroll,
                     text=btn_text,
@@ -686,7 +756,7 @@ def build_sell_ui(parent, username):
                     fg_color=color or "#1f3b4d",
                     hover_color=_shade(color, 0.85) if color else "#2c526a",
                     text_color=_text_on(color) if color else "#ffffff",
-                    command=lambda p=product: add_product_to_cart(p, "1"),
+                    command=lambda p=product: ask_product_quantity(p),
                 ).pack(fill=X, padx=4, pady=3)
         if not groups and not ungrouped:
             ctk.CTkLabel(
@@ -1037,7 +1107,6 @@ def build_sell_ui(parent, username):
     # Bind callbacks after helper declarations.
     add_button.configure(command=search_and_add)
     search_entry.bind("<Return>", search_and_add)
-    qty_entry.bind("<Return>", search_and_add)
     tree.bind("<Delete>", lambda _event: remove_selected())
     tree.bind("<Double-1>", lambda _event: change_selected_qty(1))
     warehouse_menu.configure(command=on_warehouse_change)

@@ -28,7 +28,7 @@ RESOURCE_CONFIG: dict[str, dict[str, Any]] = {
                   COALESCE((SELECT GROUP_CONCAT(pb.barcode, ', ') FROM product_barcodes pb WHERE pb.product_id=p.id),''),
                   p.cost_price, p.sell_price,
                   COALESCE((SELECT SUM(sl.quantity) FROM stock_levels sl WHERE sl.product_id=p.id),0),
-                  p.min_quantity, p.track_stock, p.is_active, COALESCE(t.name,''), COALESCE(p.color,'')
+                  p.min_quantity, p.track_stock, p.is_active,  COALESCE(p.color,'') ,COALESCE(t.name,'')
              FROM products p LEFT JOIN sections s ON s.id=p.section_id
              LEFT JOIN units u ON u.id=p.unit_id LEFT JOIN tax_rates t ON t.id=p.tax_rate_id""",
         "columns": ["ID", "SKU", "اسم المنتج", "القسم", "الوحدة", "الباركود", "التكلفة (وحدة صغرى)", "سعر البيع (وحدة صغرى)", "المخزون", "حد التنبيه", "تتبع المخزون", "نشط", "اللون","الضريبة"],
