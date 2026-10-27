@@ -1,2592 +1,835 @@
-from tkinter import *
-import customtkinter
-from Services.admin_service import *
+"""Refactored Arabic admin dashboard for the MyShop schema (migrations 1-6).
+
+The dashboard uses the current Database.Schema.db service API and no longer
+imports legacy inventory/customer SQL or image assets.
+"""
+from __future__ import annotations
+
+from datetime import date
+import tkinter as tk
+from tkinter import ttk, messagebox
+import customtkinter as ctk
+
+from Services import admin_service as svc
 from UI.router import go_login
-import cv2
-from pyzbar.pyzbar import decode
-from tkinter import messagebox
-from Domain.product import Product
-from datetime import datetime
-from tkinter import ttk
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-import arabic_reshaper
-from bidi.algorithm import get_display
-from PIL import Image
-import os
-import re
-import openpyxl
-
-def ar(text):
-    reshaped = arabic_reshaper.reshape(str(text))
-    return get_display(reshaped)
-
-
-def rtl_safe(text):
-    text = str(text)
-
-    # If text contains Arabic letters → reshape
-    if re.search(r'[\u0600-\u06FF]', text):
-        return ar(text)
-
-    # Otherwise (English / numbers) → leave as-is
-    return text
 
 
 username = ""
+_root = None
+_dashboard_refresh = None
 
-def getUsername(username_from_login):
+
+def getUsername(username_from_login: str):
     global username
-    username = username_from_login
+    username = username_from_login or ""
+
+
+def _appearance_colors():
+    dark = ctk.get_appearance_mode() == "Dark"
+    return {
+        "bg": "#121212" if dark else "#f4f6f8",
+        "card": "#1e1e1e" if dark else "#ffffff",
+        "text": "#ffffff" if dark else "#18212b",
+        "subtext": "#b8c0cc" if dark else "#5b6572",
+        "accent": "#1f6aa5",
+        "accent_hover": "#185785",
+        "success": "#218c62",
+        "danger": "#c0392b",
+        "border": "#333943" if dark else "#dce2e8",
+    }
+
+
+def _style_treeview():
+    colors = _appearance_colors()
+    style = ttk.Style()
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure("Admin.Treeview", background=colors["card"], foreground=colors["text"],
+                    fieldbackground=colors["card"], rowheight=29, borderwidth=0,
+                    font=("Segoe UI", 10))
+    style.configure("Admin.Treeview.Heading", background=colors["bg"], foreground=colors["text"],
+                    font=("Segoe UI", 10, "bold"), relief="flat")
+    style.map("Admin.Treeview", background=[("selected", colors["accent"])],
+              foreground=[("selected", "#ffffff")])
+
+
+# Each group exposes actual schema tables/views; transactional records are
+# read-only in the generic browser and changed through explicit workflows.
+ADMIN_GROUPS = [
+    ("الملخص", [
+        ("المنتجات", "products"), ("الأقسام", "sections"), ("وحدات القياس", "units"),
+        ("باركود المنتجات", "product_barcodes"), ("الضرائب", "tax_rates"),
+    ]),
+    ("المخزون", [
+        ("أرصدة المخزون", "stock_levels"), ("الأصناف منخفضة المخزون", "low_stock_products"),
+        ("حركة المخزون", "stock_movements"), ("تقييم تقريبي للمخزون", "stock_valuation"),
+        ("المخازن", "warehouses"), ("التحويلات", "stock_transfers"), ("بنود التحويلات", "stock_transfer_items"),
+    ]),
+    ("المبيعات والمشتريات", [
+        ("العملاء والموردون", "partners"), ("أرصدة العملاء", "customer_balances"),
+        ("أرصدة الموردين", "supplier_balances"), ("المبيعات", "sales"), ("بنود البيع", "sale_items"),
+        ("أوامر الشراء", "purchase_orders"), ("بنود أوامر الشراء", "purchase_order_items"),
+        ("فواتير الشراء", "purchase_invoices"), ("بنود فواتير الشراء", "purchase_invoice_items"),
+    ]),
+    ("الخزينة والمدفوعات", [
+        ("طرق الدفع", "payment_methods"), ("ورديات الخزينة", "cash_shifts"),
+        ("المدفوعات", "payments"), ("توزيع المدفوعات", "payment_allocations"),
+    ]),
+    ("المحاسبة", [
+        ("دليل الحسابات", "accounts"), ("قيود اليومية", "journal_entries"),
+        ("بنود اليومية", "journal_lines"), ("القيود غير المتوازنة", "unbalanced_entries"),
+        ("المصروفات", "expenses"),
+    ]),
+    ("الموارد البشرية", [
+        ("الأقسام الوظيفية", "departments"), ("الموظفون", "employees"),
+        ("الحضور والانصراف", "attendance"), ("تسويات الموظفين", "employee_adjustments"),
+        ("مسيرات الرواتب", "payroll_runs"), ("قسائم الرواتب", "payslips"),
+    ]),
+    ("الأمان والإعدادات", [
+        ("المستخدمون", "users"), ("الأدوار", "roles"), ("الصلاحيات", "permissions"),
+        ("صلاحيات الأدوار", "role_permissions"), ("سجل التدقيق", "audit_log"),
+        ("الإعدادات", "settings"), ("ترقيم المستندات", "doc_sequences"),
+    ]),
+]
+
+_ENUM_CHOICES = {
+    "kind": ["CASH", "CARD", "TRANSFER", "WALLET", "OTHER"],
+    "type": ["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"],
+    "salary_type": ["MONTHLY", "DAILY", "HOURLY"],
+    "status": ["PRESENT", "ABSENT", "LATE", "LEAVE", "HOLIDAY"],
+    "movement_type": ["OPENING", "ADJUSTMENT", "DAMAGE"],
+    "kind_adjustment": ["ALLOWANCE", "BONUS", "DEDUCTION", "ADVANCE"],
+}
+
+
+def _parse_record_id(resource: str, value):
+    if resource in {"settings", "doc_sequences"}:
+        return str(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _field_default(field):
+    default = field.get("default", "")
+    return date.today().isoformat() if default == "today" else default
+
+
+def _make_choice_widget(parent, field, current):
+    """Returns (widget, display->database value map)."""
+    name = field["name"]
+    values = []
+    display_to_value = {}
+    supplied_choices = field.get("choice_values")
+    if supplied_choices:
+        # A choice may be an enum string or a (database_value, display_label) pair.
+        # Preserve IDs as the submitted value while displaying human-readable labels.
+        if all(isinstance(item, (tuple, list)) and len(item) == 2 for item in supplied_choices):
+            choices = [(item[0], item[1]) for item in supplied_choices]
+        else:
+            choices = [(item, item) for item in supplied_choices]
+    else:
+        choices = svc.get_field_choices(name)
+    if choices:
+        values.append("")
+        display_to_value[""] = ""
+        for value, label in choices:
+            display = f"{value} — {label}"
+            values.append(display)
+            display_to_value[display] = value
+        current_display = ""
+        if current not in (None, ""):
+            for display, raw in display_to_value.items():
+                if str(raw) == str(current):
+                    current_display = display
+                    break
+        widget = ctk.CTkComboBox(parent, values=values, height=34, state="readonly")
+        widget.set(current_display)
+        return widget, display_to_value
+
+    if name in _ENUM_CHOICES:
+        enum_values = _ENUM_CHOICES[name]
+        widget = ctk.CTkComboBox(parent, values=enum_values, height=34, state="readonly")
+        widget.set(str(current if current not in (None, "") else field.get("default", enum_values[0])))
+        return widget, {v: v for v in enum_values}
+
+    widget = ctk.CTkEntry(parent, height=34, show="*" if field.get("secret") else "")
+    if current not in (None, ""):
+        widget.insert(0, str(current))
+    elif _field_default(field) not in (None, ""):
+        widget.insert(0, str(_field_default(field)))
+    return widget, display_to_value
+
+
+def _widget_value(widget, display_to_value):
+    value = widget.get().strip()
+    if display_to_value:
+        return display_to_value.get(value, value)
+    return value
+
+
+def _prompt_form(title: str, fields: list[dict], on_submit, record: dict | None = None,
+                 parent=None, note: str | None = None):
+    parent = parent or _root
+    colors = _appearance_colors()
+    win = ctk.CTkToplevel(parent)
+    win.title(title)
+    win.geometry("650x760")
+    win.minsize(520, 420)
+    win.configure(fg_color=colors["bg"])
+    win.transient(parent)
+    win.grab_set()
+
+    ctk.CTkLabel(win, text=title, font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(padx=18, pady=(16, 8))
+    if note:
+        ctk.CTkLabel(win, text=note, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=590, justify="left").pack(fill="x", padx=18, pady=(0, 10))
+    body = ctk.CTkScrollableFrame(win, fg_color=colors["card"], corner_radius=12)
+    body.pack(fill="both", expand=True, padx=18, pady=8)
+    body.grid_columnconfigure(0, weight=1)
+    body.grid_columnconfigure(1, weight=2)
+    widgets = {}
+    option_maps = {}
+    for row_no, field in enumerate(fields):
+        ctk.CTkLabel(body, text=field["label"], anchor="e", text_color=colors["text"], font=("Segoe UI", 12)).grid(row=row_no, column=1, sticky="ew", padx=10, pady=7)
+        current = (record or {}).get(field["name"], _field_default(field))
+        widget, display_map = _make_choice_widget(body, field, current)
+        widget.grid(row=row_no, column=0, sticky="ew", padx=10, pady=7)
+        widgets[field["name"]] = widget
+        option_maps[field["name"]] = display_map
+
+    footer = ctk.CTkFrame(win, fg_color="transparent")
+    footer.pack(fill="x", padx=18, pady=(6, 16))
+
+    def submit():
+        values = {name: _widget_value(widget, option_maps[name]) for name, widget in widgets.items()}
+        try:
+            result = on_submit(values)
+        except Exception as exc:
+            messagebox.showerror("تعذر الحفظ", str(exc), parent=win)
+            return
+        if result is False:
+            return
+        win.destroy()
+
+    ctk.CTkButton(footer, text="حفظ", command=submit, fg_color=colors["success"], height=38).pack(side="right", padx=6)
+    ctk.CTkButton(footer, text="إلغاء", command=win.destroy, fg_color="#6b7280", height=38).pack(side="right", padx=6)
+    return win
+
+
+def _refresh_dashboard():
+    if _dashboard_refresh:
+        try:
+            _dashboard_refresh()
+        except Exception:
+            pass
+
+
+def _notify_action(success_message: str, action, refresh_resource=None, refresh_callback=None):
+    try:
+        action()
+    except Exception as exc:
+        messagebox.showerror("خطأ", str(exc), parent=_root)
+        return False
+    messagebox.showinfo("تم", success_message, parent=_root)
+    _refresh_dashboard()
+    if refresh_callback:
+        refresh_callback()
+    return True
+
+
+def _open_entity_editor(resource: str, record_id=None, refresh_callback=None):
+    fields = svc.FIELD_DEFS[resource]
+    record = None
+    if record_id is not None:
+        record = svc.get_resource_record(resource, record_id)
+        if not record:
+            messagebox.showerror("خطأ", "لم يتم العثور على السجل", parent=_root)
+            return
+    title = ("إضافة " if record_id is None else "تعديل ") + svc.RESOURCE_CONFIG[resource]["title"]
+    note = None
+    if resource == "products":
+        note = "الكميات لا تُعدّل من بطاقة المنتج؛ استخدم تسوية المخزون أو التحويل حتى يظل دفتر حركة المخزون هو المصدر الصحيح. الأسعار والمبالغ تُخزن بوحدة العملة الصغرى وفق المخطط."
+    elif resource == "users":
+        note = "لا يتم عرض كلمة المرور المحفوظة. صيغة كلمات المرور الجديدة هنا PBKDF2-SHA256؛ تأكد أن خدمة تسجيل الدخول تستخدم verify_admin_password من Services.admin_service."
+    elif resource == "warehouses":
+        note = "يمكن تعيين مخزن افتراضي واحد فقط. لا يمكن تعطيل المخزن الافتراضي قبل تعيين بديل."
+    elif resource == "settings":
+        note = "تغيير المفاتيح المستخدمة في الحسابات يؤثر على ترحيل القيود. لا تغيّرها إلا إذا كنت تعرف أثرها."
+
+    def save(values):
+        svc.save_entity(resource, values, record_id=record_id, user_id=svc.get_username_id(username))
+        if refresh_callback:
+            refresh_callback()
+        _refresh_dashboard()
+        messagebox.showinfo("تم", "تم حفظ البيانات بنجاح", parent=_root)
+
+    # For settings, key edits create a new setting because keys are the primary key.
+    _prompt_form(title, fields, save, record=record, note=note)
+
+
+def _selected_row(tree):
+    selected = tree.selection()
+    if not selected:
+        return None
+    item = tree.item(selected[0])
+    vals = item.get("values", [])
+    return vals if vals else None
+
+
+def _open_stock_adjustment(refresh):
+    fields = [
+        {"name":"product_id","label":"المنتج ID","type":"int","required":True},
+        {"name":"warehouse_id","label":"المخزن ID","type":"int","required":True},
+        {"name":"movement_type","label":"نوع الحركة","required":True,"choice_values":_ENUM_CHOICES["movement_type"]},
+        {"name":"quantity_change","label":"تغير الكمية (+ إضافة / - سحب)","type":"float","required":True},
+        {"name":"unit_cost","label":"التكلفة بوحدة العملة الصغرى (اختياري)","type":"int?"},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    # Mark choice fields with schema-linked choice sources.
+    fields[0]["choice_values"] = None
+    fields[0]["name"] = "product_id"
+    fields[1]["name"] = "warehouse_id"
+    def submit(v):
+        product_id = int(v["product_id"])
+        warehouse_id = int(v["warehouse_id"])
+        qty = float(v["quantity_change"])
+        unit_cost = int(v["unit_cost"]) if str(v.get("unit_cost", "")).strip() else None
+        movement = str(v["movement_type"])
+        user_id = svc.get_username_id(username)
+        svc.add_stock_adjustment(product_id, warehouse_id, qty, movement, unit_cost, user_id, v.get("note", ""))
+        refresh()
+        _refresh_dashboard()
+        messagebox.showinfo("تم", "تم تسجيل حركة المخزون بنجاح", parent=_root)
+    _prompt_form("تسوية المخزون", fields, submit, note="لا تغيّر الكمية مباشرة في جدول المنتجات. ستُضاف حركة جديدة إلى دفتر المخزون.")
+
+
+def _open_transfer(refresh):
+    fields = [
+        {"name":"from_warehouse_id","label":"من المخزن ID","type":"int","required":True,"choices_key":"warehouse_id"},
+        {"name":"to_warehouse_id","label":"إلى المخزن ID","type":"int","required":True,"choices_key":"warehouse_id"},
+        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choices_key":"product_id"},
+        {"name":"quantity","label":"الكمية","type":"float","required":True},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    # _make_choice_widget looks up choices based on field name; linked keys are aliased here.
+    fields[0]["name"] = "from_warehouse_id"; fields[0]["choice_values"] = [(x[0], x[1]) for x in svc.get_field_choices("warehouse_id")]
+    fields[1]["name"] = "to_warehouse_id"; fields[1]["choice_values"] = [(x[0], x[1]) for x in svc.get_field_choices("warehouse_id")]
+    fields[2]["choice_values"] = [(x[0], x[1]) for x in svc.get_field_choices("product_id")]
+    def submit(v):
+        transfer_id = svc.create_stock_transfer(int(v["from_warehouse_id"]), int(v["to_warehouse_id"]),
+                                                [{"product_id": int(v["product_id"]), "quantity": float(v["quantity"])}],
+                                                svc.get_username_id(username), v.get("note", ""))
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم تسجيل التحويل وإضافة حركتي الصرف والإضافة. رقم السجل: {transfer_id}", parent=_root)
+    _prompt_form("تحويل بين المخازن", fields, submit, note="يتم تسجيل التحويل وحركتي المخزون داخل معاملة واحدة. هذه الشاشة تنفذ تحويلًا لصنف واحد في كل مرة.")
+
+
+def _open_sale_form(refresh):
+    fields = [
+        {"name":"customer_id","label":"العميل ID (فارغ للبيع النقدي)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("customer_id")]},
+        {"name":"warehouse_id","label":"المخزن ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("warehouse_id")]},
+        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
+        {"name":"quantity","label":"الكمية","type":"float","required":True},
+        {"name":"unit_price","label":"سعر الوحدة بوحدة العملة الصغرى","type":"int","required":True},
+        {"name":"discount","label":"خصم البند بوحدة العملة الصغرى","type":"int","default":"0"},
+        {"name":"tax_rate_bp","label":"نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)","type":"int?"},
+        {"name":"shift_id","label":"الوردية المفتوحة ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("shift_id")]},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    def submit(v):
+        current_user_id = svc.get_username_id(username)
+        if current_user_id is None:
+            raise ValueError("لا يمكن تحديد المستخدم الحالي من اسم الدخول")
+        sale_id = svc.create_sale(int(v["customer_id"]) if v.get("customer_id") else None,
+                                  int(v["warehouse_id"]), int(v["product_id"]), float(v["quantity"]),
+                                  int(v["unit_price"]), int(v.get("discount") or 0), int(v["tax_rate_bp"]) if v.get("tax_rate_bp") else None,
+                                  current_user_id, int(v["shift_id"]) if v.get("shift_id") else None,
+                                  note=v.get("note", ""), post=True)
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم تسجيل البيع وترحيل القيد. معرف البيع: {sale_id}", parent=_root)
+    _prompt_form("تسجيل عملية بيع", fields, submit,
+                 note="هذه النسخة تسجل بندًا واحدًا. البيع بعميل مسجل يُرحّل إلى حساب العملاء، والبيع النقدي بدون عميل يُرحّل إلى حساب النقدية. المبالغ بوحدة العملة الصغرى.")
+
+
+def _open_purchase_order_form(refresh):
+    fields = [
+        {"name":"supplier_id","label":"المورد ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("supplier_id")]},
+        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
+        {"name":"quantity","label":"الكمية","type":"float","required":True},
+        {"name":"unit_cost","label":"تكلفة الوحدة بوحدة العملة الصغرى","type":"int","required":True},
+        {"name":"expected_date","label":"تاريخ التوقع YYYY-MM-DD"},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    def submit(v):
+        order_id = svc.create_purchase_order(int(v["supplier_id"]), int(v["product_id"]), float(v["quantity"]), int(v["unit_cost"]), svc.get_username_id(username), v.get("expected_date") or None, v.get("note", ""))
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم إنشاء أمر الشراء كمسودة. المعرف: {order_id}", parent=_root)
+    _prompt_form("إنشاء أمر شراء", fields, submit, note="أمر الشراء لا يزيد المخزون؛ يتم الاستلام عبر فاتورة الشراء المرحلة.")
+
+
+def _open_sale_return_form(refresh):
+    fields = [
+        {"name":"original_sale_id","label":"فاتورة البيع الأصلية ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("original_sale_id")]},
+        {"name":"product_id","label":"المنتج ID الموجود بالفاتورة","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
+        {"name":"quantity","label":"كمية المرتجع","type":"float","required":True},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    def submit(v):
+        current_user_id = svc.get_username_id(username)
+        if current_user_id is None:
+            raise ValueError("لا يمكن تحديد المستخدم الحالي من اسم الدخول")
+        return_id = svc.create_sale_return(int(v["original_sale_id"]), int(v["product_id"]), float(v["quantity"]), current_user_id, note=v.get("note", ""))
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم ترحيل مرتجع البيع. المعرف: {return_id}", parent=_root)
+    _prompt_form("مرتجع بيع", fields, submit, note="اختر فاتورة بيع مرحلة والمنتج المرتبط بها. يمنع النظام إرجاع كمية تتجاوز الكمية المباعة بعد المرتجعات السابقة.")
+
+
+def _open_purchase_invoice_form(refresh):
+    fields = [
+        {"name":"supplier_id","label":"المورد ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("supplier_id")]},
+        {"name":"warehouse_id","label":"المخزن ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("warehouse_id")]},
+        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
+        {"name":"quantity","label":"الكمية","type":"float","required":True},
+        {"name":"unit_cost","label":"تكلفة الوحدة بوحدة العملة الصغرى","type":"int","required":True},
+        {"name":"tax_rate_bp","label":"نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)","type":"int?"},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    def submit(v):
+        if int(v.get("tax_rate_bp") or 0) > 0:
+            ok = messagebox.askyesno("تنبيه محاسبي", "دليل الحسابات الحالي لا يحتوي على حساب ضريبة مدخلات قابلة للاسترداد. ستُضاف الضريبة إلى تكلفة المخزون في القيد. هل تريد المتابعة؟", parent=_root)
+            if not ok:
+                return False
+        invoice_id = svc.create_purchase_invoice(int(v["supplier_id"]), int(v["warehouse_id"]), int(v["product_id"]), float(v["quantity"]), int(v["unit_cost"]), int(v["tax_rate_bp"]) if v.get("tax_rate_bp") else None, svc.get_username_id(username), v.get("note", ""), post=True)
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم ترحيل فاتورة الشراء وزيادة المخزون. المعرف: {invoice_id}", parent=_root)
+    _prompt_form("تسجيل فاتورة شراء", fields, submit, note="النسخة الحالية تدعم بندًا واحدًا فقط لكل عملية. ترحيل الفاتورة يزيد المخزون ويُنشئ قيدًا متوازنًا. إذا كانت ضريبة المدخلات قابلة للاسترداد، أضف حساب ضريبة مدخلات قبل استخدام هذا المسار.")
+
+
+def _open_purchase_return_form(refresh):
+    fields = [
+        {"name":"original_invoice_id","label":"فاتورة الشراء الأصلية ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("original_invoice_id")]},
+        {"name":"product_id","label":"المنتج ID الموجود بالفاتورة","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
+        {"name":"quantity","label":"كمية المرتجع","type":"float","required":True},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    def submit(v):
+        return_id = svc.create_purchase_return(int(v["original_invoice_id"]), int(v["product_id"]), float(v["quantity"]), svc.get_username_id(username), v.get("note", ""))
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم ترحيل مرتجع الشراء. المعرف: {return_id}", parent=_root)
+    _prompt_form("مرتجع شراء", fields, submit, note="يتحقق النظام من الكمية التي تم شراؤها سابقًا، ويخفض المخزون وينشئ قيدًا متوازنًا. ضريبة الشراء تُعامل ضمن تكلفة المخزون وفق مخطط الحسابات الحالي.")
+
+
+def _open_payment_form(refresh):
+    fields = [
+        {"name":"direction","label":"الاتجاه","required":True,"choice_values":[("IN","تحصيل من عميل"),("OUT","سداد لمورد")]},
+        {"name":"partner_id","label":"الشريك ID","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("partner_id")]},
+        {"name":"method_id","label":"طريقة الدفع ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("method_id")]},
+        {"name":"amount","label":"المبلغ بوحدة العملة الصغرى","type":"int","required":True},
+        {"name":"shift_id","label":"الوردية المفتوحة ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("shift_id")]},
+        {"name":"document_type","label":"نوع المستند المراد التوزيع عليه (اختياري)","choice_values":[("SALE","SALE"),("PURCHASE_INVOICE","PURCHASE_INVOICE")]},
+        {"name":"document_id","label":"معرف المستند (اتركه فارغًا للدفع غير الموزع)","type":"int?"},
+        {"name":"allocated_amount","label":"المبلغ الموزع (اختياري)","type":"int?"},
+        {"name":"reference","label":"مرجع التحويل/الإيصال"},
+        {"name":"note","label":"ملاحظة"},
+    ]
+    def submit(v):
+        allocations = []
+        if v.get("document_id"):
+            if not v.get("allocated_amount"):
+                raise ValueError("أدخل مبلغ التوزيع عند تحديد مستند")
+            allocations.append({"document_type":v["document_type"], "document_id":int(v["document_id"]), "amount":int(v["allocated_amount"])})
+        elif v.get("allocated_amount"):
+            raise ValueError("أدخل معرف المستند أو اترك مبلغ التوزيع فارغًا")
+        payment_id = svc.record_payment(v["direction"], int(v["partner_id"]) if v.get("partner_id") else None, int(v["method_id"]), int(v["amount"]), svc.get_username_id(username), allocations, int(v["shift_id"]) if v.get("shift_id") else None, v.get("reference", ""), v.get("note", ""))
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم تسجيل الدفع وإنشاء القيد المحاسبي. المعرف: {payment_id}", parent=_root)
+    _prompt_form("تسجيل دفعة أو تحصيل", fields, submit, note="يمكن توزيع الدفع على مستند واحد في هذه الشاشة. أي مبلغ غير موزع يظل رصيدًا على حساب الشريك وفق منطق أرصدة النظام.")
+
+
+def _open_expense_form(refresh):
+    fields = [
+        {"name":"expense_date","label":"تاريخ المصروف YYYY-MM-DD","required":True,"default":date.today().isoformat()},
+        {"name":"account_id","label":"حساب المصروف ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("account_id")]},
+        {"name":"method_id","label":"طريقة الدفع ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("method_id")]},
+        {"name":"amount","label":"المبلغ بوحدة العملة الصغرى","type":"int","required":True},
+        {"name":"partner_id","label":"الشريك ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("partner_id")]},
+        {"name":"shift_id","label":"الوردية المفتوحة ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("shift_id")]},
+        {"name":"description","label":"الوصف"},
+    ]
+    def submit(v):
+        expense_id = svc.record_expense(v["expense_date"], int(v["account_id"]), int(v["method_id"]), int(v["amount"]), svc.get_username_id(username), v.get("description", ""), int(v["partner_id"]) if v.get("partner_id") else None, int(v["shift_id"]) if v.get("shift_id") else None)
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم تسجيل المصروف وإنشاء القيد. المعرف: {expense_id}", parent=_root)
+    _prompt_form("تسجيل مصروف", fields, submit, note="اختر حسابًا من نوع EXPENSE وطريقة دفع مرتبطة بحساب أستاذ.")
+
+
+def _open_journal_form(refresh):
+    accounts = [(x[0], x[1]) for x in svc.get_field_choices("account_id")]
+    fields = [
+        {"name":"entry_date","label":"تاريخ القيد YYYY-MM-DD","required":True,"default":date.today().isoformat()},
+        {"name":"description","label":"وصف القيد","required":True},
+        {"name":"debit_account","label":"الحساب المدين ID","type":"int","required":True,"choice_values":accounts},
+        {"name":"credit_account","label":"الحساب الدائن ID","type":"int","required":True,"choice_values":accounts},
+        {"name":"amount","label":"المبلغ بوحدة العملة الصغرى","type":"int","required":True},
+    ]
+    def submit(v):
+        if int(v["debit_account"]) == int(v["credit_account"]):
+            raise ValueError("اختر حسابين مختلفين")
+        amount = int(v["amount"])
+        if amount <= 0:
+            raise ValueError("المبلغ يجب أن يكون أكبر من صفر")
+        entry_id = svc.create_manual_journal(v["entry_date"], v["description"], [
+            {"account_id":int(v["debit_account"]),"debit":amount,"credit":0,"description":v["description"]},
+            {"account_id":int(v["credit_account"]),"debit":0,"credit":amount,"description":v["description"]},
+        ], svc.get_username_id(username))
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم إنشاء القيد المتوازن وترحيله. المعرف: {entry_id}", parent=_root)
+    _prompt_form("إنشاء قيد يومية متوازن", fields, submit, note="هذا النموذج ينشئ قيدًا من سطر مدين وسطر دائن بالقيمة نفسها. القيود المرحلة غير قابلة للتعديل أو الحذف.")
+
+
+def _open_payroll_form(refresh):
+    fields = [
+        {"name":"period_start","label":"بداية الفترة YYYY-MM-DD","required":True,"default":date.today().replace(day=1).isoformat()},
+        {"name":"period_end","label":"نهاية الفترة YYYY-MM-DD","required":True,"default":date.today().isoformat()},
+    ]
+    def submit(v):
+        run_id = svc.create_payroll_draft(v["period_start"], v["period_end"], svc.get_username_id(username))
+        refresh(); _refresh_dashboard()
+        messagebox.showinfo("تم", f"تم إنشاء مسودة رواتب تشمل الموظفين النشطين. المعرف: {run_id}", parent=_root)
+    _prompt_form("إنشاء مسودة مسير رواتب", fields, submit, note="تنشأ قسائم أولية على أساس الأجر الأساسي فقط. لم يتم تفعيل ترحيل الرواتب أو الدفع آليًا لأن ذلك يتطلب سياسة خصومات/حضور وحسابات مقابلة محددة.")
+
+
+def _open_role_permissions():
+    colors = _appearance_colors()
+    roles = svc.get_field_choices("role_id")
+    if not roles:
+        messagebox.showerror("خطأ", "لا توجد أدوار", parent=_root); return
+    win = ctk.CTkToplevel(_root)
+    win.title("إدارة صلاحيات الأدوار")
+    win.geometry("600x720")
+    win.transient(_root); win.grab_set(); win.configure(fg_color=colors["bg"])
+    ctk.CTkLabel(win, text="إدارة صلاحيات الدور", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=12)
+    options = [f"{rid} — {name}" for rid, name in roles]
+    role_combo = ctk.CTkComboBox(win, values=options, width=450, state="readonly")
+    role_combo.pack(pady=8)
+    check_area = ctk.CTkScrollableFrame(win, fg_color=colors["card"])
+    check_area.pack(fill="both", expand=True, padx=18, pady=12)
+    state = {"vars": [], "permission_ids": [], "role_id": None}
+    def load_role(_=None):
+        for child in check_area.winfo_children(): child.destroy()
+        state["vars"].clear(); state["permission_ids"].clear()
+        selected = role_combo.get()
+        try: role_id = int(selected.split(" — ",1)[0])
+        except (ValueError, IndexError): return
+        all_permissions, assigned, role = svc.get_role_permissions(role_id)
+        state["role_id"] = role_id
+        for perm_id, code, description in all_permissions:
+            var = tk.BooleanVar(value=perm_id in assigned)
+            box = ctk.CTkCheckBox(check_area, text=f"{code} — {description}", variable=var)
+            box.pack(fill="x", padx=8, pady=5, anchor="w")
+            state["vars"].append(var); state["permission_ids"].append(perm_id)
+    role_combo.configure(command=load_role)
+    role_combo.set(options[0]); load_role()
+    def save():
+        if state["role_id"] is None: return
+        selected = [pid for pid, var in zip(state["permission_ids"], state["vars"]) if var.get()]
+        try: svc.set_role_permissions(state["role_id"], selected, svc.get_username_id(username))
+        except Exception as exc:
+            messagebox.showerror("خطأ", str(exc), parent=win); return
+        messagebox.showinfo("تم", "تم تحديث صلاحيات الدور", parent=win); win.destroy()
+    ctk.CTkButton(win, text="حفظ الصلاحيات", command=save, fg_color=colors["success"]).pack(pady=(0,16))
+
+
+def _resource_action_buttons(resource, toolbar, refresh, tree):
+    colors = _appearance_colors()
+    def add_action(label, func):
+        ctk.CTkButton(toolbar, text=label, command=func, height=34, fg_color=colors["accent"], hover_color=colors["accent_hover"]).pack(side="right", padx=4, pady=4)
+    if resource == "stock_levels":
+        add_action("تسوية مخزون", lambda: _open_stock_adjustment(refresh))
+        add_action("تحويل بين المخازن", lambda: _open_transfer(refresh))
+    elif resource == "stock_transfers":
+        add_action("تحويل جديد", lambda: _open_transfer(refresh))
+    elif resource == "sales":
+        add_action("تسجيل بيع", lambda: _open_sale_form(refresh))
+        add_action("مرتجع بيع", lambda: _open_sale_return_form(refresh))
+    elif resource == "purchase_orders":
+        add_action("أمر شراء جديد", lambda: _open_purchase_order_form(refresh))
+    elif resource == "purchase_invoices":
+        add_action("فاتورة شراء", lambda: _open_purchase_invoice_form(refresh))
+        add_action("مرتجع شراء", lambda: _open_purchase_return_form(refresh))
+    elif resource == "payments":
+        add_action("تسجيل دفعة", lambda: _open_payment_form(refresh))
+    elif resource == "cash_shifts":
+        def open_shift():
+            fields = [{"name":"opening_cash","label":"رصيد بداية الوردية بوحدة العملة الصغرى","type":"int","default":"0","required":True},{"name":"note","label":"ملاحظة"}]
+            def submit(v):
+                svc.open_cash_shift(svc.get_username_id(username), int(v["opening_cash"]), v.get("note", "")); refresh(); _refresh_dashboard()
+                messagebox.showinfo("تم", "تم فتح الوردية", parent=_root)
+            _prompt_form("فتح وردية خزينة", fields, submit)
+        def close_shift():
+            vals = _selected_row(tree)
+            if not vals:
+                messagebox.showwarning("تنبيه", "اختر وردية أولًا", parent=_root); return
+            if str(vals[7]) != "OPEN":
+                messagebox.showwarning("تنبيه", "الوردية المحددة ليست مفتوحة", parent=_root); return
+            fields = [{"name":"closing_cash","label":"النقد الفعلي عند الإغلاق بوحدة العملة الصغرى","type":"int","required":True}]
+            def submit(v):
+                expected = svc.close_cash_shift(int(vals[0]), int(v["closing_cash"]), svc.get_username_id(username)); refresh(); _refresh_dashboard()
+                messagebox.showinfo("تم", f"تم إغلاق الوردية. النقد المتوقع من المدفوعات والمصروفات المسجلة: {expected}", parent=_root)
+            _prompt_form("إغلاق الوردية", fields, submit)
+        add_action("فتح وردية", open_shift); add_action("إغلاق الوردية المحددة", close_shift)
+    elif resource == "expenses":
+        add_action("مصروف جديد", lambda: _open_expense_form(refresh))
+    elif resource == "journal_entries":
+        add_action("قيد يدوي متوازن", lambda: _open_journal_form(refresh))
+        def reverse_selected_journal():
+            vals = _selected_row(tree)
+            if not vals:
+                messagebox.showwarning("تنبيه", "اختر قيدًا أولًا", parent=_root)
+                return
+            if str(vals[6]) != "POSTED":
+                messagebox.showwarning("تنبيه", "اختر قيدًا مرحلًا وغير معكوس", parent=_root)
+                return
+            reason_win_fields = [{"name":"reason","label":"سبب العكس","required":True}]
+            def submit(v):
+                reversal_id = svc.reverse_manual_journal(int(vals[0]), svc.get_username_id(username), v["reason"])
+                refresh(); _refresh_dashboard()
+                messagebox.showinfo("تم", f"تم إنشاء قيد العكس رقم المعرف {reversal_id}", parent=_root)
+            _prompt_form("عكس قيد يومية يدوي", reason_win_fields, submit,
+                         note="يُنشأ قيد جديد بعكس المدين والدائن. لا يتم حذف أو تعديل بنود القيد الأصلي، ولا يمكن عكس القيود التشغيلية من هذه الشاشة.")
+        add_action("عكس قيد يدوي", reverse_selected_journal)
+    elif resource == "payroll_runs":
+        add_action("مسودة رواتب", lambda: _open_payroll_form(refresh))
+    elif resource == "roles":
+        add_action("إدارة الصلاحيات", _open_role_permissions)
+
+
+def open_resource_window(resource: str):
+    cfg = svc.RESOURCE_CONFIG.get(resource)
+    if not cfg:
+        messagebox.showerror("خطأ", "هذه الشاشة غير مسجلة", parent=_root); return
+    colors = _appearance_colors()
+    win = ctk.CTkToplevel(_root)
+    win.title(cfg["title"])
+    win.geometry("1250x720")
+    win.minsize(850, 520)
+    win.configure(fg_color=colors["bg"])
+    win.transient(_root)
+    _style_treeview()
+
+    header = ctk.CTkFrame(win, fg_color=colors["card"], corner_radius=12)
+    header.pack(fill="x", padx=16, pady=(16, 8))
+    ctk.CTkLabel(header, text=cfg["title"], font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(side="right", padx=14, pady=10)
+
+    toolbar = ctk.CTkFrame(win, fg_color="transparent")
+    toolbar.pack(fill="x", padx=16, pady=4)
+    search_var = tk.StringVar()
+    search_entry = ctk.CTkEntry(toolbar, textvariable=search_var, placeholder_text="بحث...", width=280, height=34)
+    search_entry.pack(side="right", padx=4)
+
+    table_frame = ctk.CTkFrame(win, fg_color=colors["card"], corner_radius=10)
+    table_frame.pack(fill="both", expand=True, padx=16, pady=(4, 16))
+    tree_holder = tk.Frame(table_frame, bd=0, highlightthickness=0, bg=colors["card"])
+    tree_holder.pack(fill="both", expand=True, padx=8, pady=8)
+    columns = [f"c{i}" for i in range(len(cfg["columns"]))]
+    tree = ttk.Treeview(tree_holder, columns=columns, show="headings", style="Admin.Treeview")
+    vscroll = ttk.Scrollbar(tree_holder, orient="vertical", command=tree.yview)
+    hscroll = ttk.Scrollbar(tree_holder, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+    tree.grid(row=0, column=0, sticky="nsew")
+    vscroll.grid(row=0, column=1, sticky="ns")
+    hscroll.grid(row=1, column=0, sticky="ew")
+    tree_holder.rowconfigure(0, weight=1); tree_holder.columnconfigure(0, weight=1)
+    for idx, heading in enumerate(cfg["columns"]):
+        tree.heading(columns[idx], text=heading)
+        tree.column(columns[idx], width=min(240, max(90, len(str(heading)) * 11)), anchor="center", stretch=True)
+
+    def refresh():
+        try:
+            rows = svc.list_resource(resource, search_var.get())
+        except Exception as exc:
+            messagebox.showerror("خطأ في قراءة البيانات", str(exc), parent=win)
+            return
+        tree.delete(*tree.get_children())
+        for row in rows:
+            tree.insert("", "end", values=["" if v is None else v for v in row])
+        count_label.configure(text=f"عدد السجلات: {len(rows)}")
+
+    count_label = ctk.CTkLabel(toolbar, text="", text_color=colors["subtext"])
+    count_label.pack(side="left", padx=8)
+    ctk.CTkButton(toolbar, text="تحديث", width=80, command=refresh, height=34).pack(side="left", padx=3)
+    search_entry.bind("<Return>", lambda _e: refresh())
+
+    if cfg.get("editable"):
+        ctk.CTkButton(toolbar, text="إضافة", width=90, height=34, fg_color=colors["success"],
+                      command=lambda: _open_entity_editor(resource, refresh_callback=refresh)).pack(side="left", padx=3)
+        def edit_selected():
+            vals = _selected_row(tree)
+            if not vals:
+                messagebox.showwarning("تنبيه", "اختر سجلًا للتعديل", parent=win); return
+            _open_entity_editor(resource, _parse_record_id(resource, vals[0]), refresh_callback=refresh)
+        ctk.CTkButton(toolbar, text="تعديل", width=90, height=34, command=edit_selected).pack(side="left", padx=3)
+        if resource not in {"settings", "doc_sequences", "product_barcodes", "roles"}:
+            def deactivate_selected():
+                vals = _selected_row(tree)
+                if not vals:
+                    messagebox.showwarning("تنبيه", "اختر سجلًا أولًا", parent=win); return
+                record_id = _parse_record_id(resource, vals[0])
+                if not messagebox.askyesno("تأكيد", "هل تريد تعطيل هذا السجل؟ لن يتم حذفه من قاعدة البيانات.", parent=win): return
+                try:
+                    svc.deactivate_entity(resource, int(record_id), user_id=svc.get_username_id(username)); refresh(); _refresh_dashboard()
+                except Exception as exc:
+                    messagebox.showerror("تعذر التعطيل", str(exc), parent=win)
+            ctk.CTkButton(toolbar, text="تعطيل", width=90, height=34, fg_color=colors["danger"], command=deactivate_selected).pack(side="left", padx=3)
+
+    _resource_action_buttons(resource, toolbar, refresh, tree)
+    tree.bind("<Double-1>", lambda _e: _open_entity_editor(resource, _parse_record_id(resource, _selected_row(tree)[0]), refresh) if cfg.get("editable") and _selected_row(tree) else None)
+    refresh()
+    return win
 
 
 def open_add_product():
-    win = Toplevel()
-    win.title("إضافة صنف جديد")
-    win.geometry("520x640")
-    win.grab_set()
-    
-    
-    appearance = customtkinter.get_appearance_mode()
-    bg_color = "#121212" if appearance == "Dark" else "#f4f6f8"
-    card_color = "#1e1e1e" if appearance == "Dark" else "#ffffff"
-    text_color = "#ffffff" if appearance == "Dark" else "#000000"
-
-    win.configure(bg=bg_color)
-
-    # ================= VARIABLES =================
-    min_qty_var = StringVar()
-    price_var = StringVar()
-    qty_var = StringVar()
-    total_var = StringVar(value="0.00")
-
-    # ================= HELPERS =================
-    def calculate_total(*args):
-        try:
-            total_var.set(f"{float(price_var.get()) * int(qty_var.get()):.2f}")
-        except:
-            total_var.set("0.00")
-
-    def save():
-        global username
-        created_at = dateEntry.get().strip()
-        name = nameEntry.get().strip()
-        barcode = barcodeEntry.get().strip()
-        price = price_var.get().strip()
-        qty = qty_var.get().strip()
-        min_qty = min_qty_var.get().strip()
-
-        if not all([name, price]):
-            messagebox.showerror("خطأ", "برجاء ادخال الحقول المطلوبة")
-            return
-
-        try:
-            price = float(price)
-            qty = int(qty) if qty else 0
-            min_qty = int(min_qty) if min_qty else 0
-        except ValueError:
-            messagebox.showerror("خطأ", "السعر أو الكمية غير صحيحة")
-            return
-
-        product = Product(created_at, name, barcode, price, qty, min_qty)
-        add_product(
-            product.created_at,
-            product.name,
-            product.barcode,
-            product.price,
-            product.qty,
-            product.min_qty,
-            user_id=get_user_id(username)
-        )
-
-        messagebox.showinfo("تم", "تم حفظ الصنف بنجاح")
-        win.destroy()
-
-    def scan():
-        cap = cv2.VideoCapture(0)
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            for barcode in decode(frame):
-                barcodeEntry.delete(0, END)
-                barcodeEntry.insert(0, barcode.data.decode("utf-8"))
-                cap.release()
-                cv2.destroyAllWindows()
-                return
-            cv2.imshow("Scan Barcode (Q to cancel)", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        cap.release()
-        cv2.destroyAllWindows()
-
-    # ================= CARD =================
-    card = customtkinter.CTkFrame(
-        win,
-        fg_color=card_color,
-        corner_radius=18
-    )
-    card.pack(fill=BOTH, expand=True, padx=20, pady=20)
-
-    card.grid_columnconfigure(0, weight=1)
-    card.grid_columnconfigure(1, weight=2)
-
-    def field(label, row, var=None, readonly=False):
-        customtkinter.CTkLabel(
-            card,
-            text=label,
-            anchor="e",
-            font=("Arial", 20),
-            text_color=text_color
-        ).grid(row=row, column=1, sticky="e", padx=10, pady=10)
-
-        entry = customtkinter.CTkEntry(
-            card,
-            textvariable=var,
-            height=42,
-            font=("Arial", 22),
-            justify="center",
-            state="readonly" if readonly else "normal"
-        )
-        entry.grid(row=row, column=0, sticky="ew", padx=10, pady=10)
-        return entry
-
-    # ================= FIELDS =================
-    dateEntry = field("الوقت", 0)
-    dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-    nameEntry = field("اسم الصنف", 1)
-    barcodeEntry = field("الباركود", 2)
-    priceEntry = field("السعر", 3, price_var)
-    qtyEntry = field("الكمية", 4, qty_var)
-    minQtyEntry = field("الحد الأدنى", 5, min_qty_var)
-    totalEntry = field("الإجمالي", 6, total_var, readonly=True)
-
-    # ================= FOOTER =================
-    footer = customtkinter.CTkFrame(
-        win,
-        fg_color="transparent"
-    )
-    footer.pack(fill=X, padx=20, pady=(0, 20))
-
-    footer.grid_columnconfigure(0, weight=1)
-    footer.grid_columnconfigure(1, weight=1)
-    footer.grid_columnconfigure(2, weight=1)
-
-    customtkinter.CTkButton(
-        footer,
-        text="📷 امسح الباركود",
-        height=44,
-        font=("Arial", 20, "bold"),
-        fg_color="#2a7fff",
-        command=scan
-    ).grid(row=0, column=1, padx=5, sticky="ew")
-
-    customtkinter.CTkButton(
-        footer,
-        text="💾 حفظ",
-        height=44,
-        font=("Arial", 20, "bold"),
-        fg_color="#22c55e",
-        command=save
-    ).grid(row=0, column=2, padx=5, sticky="ew")
-
-    # ================= TRACES =================
-    price_var.trace_add("write", calculate_total)
-    qty_var.trace_add("write", calculate_total)
+    return open_resource_window("products")
 
 
-
-
-# to do
-# handle the following that is if item is unlimited do not show it in options
 def open_add_to_storage():
-    win = Toplevel()
-    win.title("إضافة الي المخزن")
-    win.geometry("500x600")
-    win.grab_set()
-    appearance = customtkinter.get_appearance_mode()
-    bg_color = "#121212" if appearance == "Dark" else "#f4f6f8"
-    card_color = "#1e1e1e" if appearance == "Dark" else "#ffffff"
-    text_color = "#ffffff" if appearance == "Dark" else "#000000"
-
-    win.configure(bg=bg_color)
-
-    win.grid_columnconfigure(0, weight=1)
-    win.grid_columnconfigure(1, weight=1)
-
-    price_var = StringVar()
-    qty_var = StringVar()
-    total_var = StringVar(value="0.00")
-    min_qty_var = StringVar()
-    value_inside = customtkinter.StringVar(win)
-
-    def setPrice(*args):
-        try:
-            name = value_inside.get().strip()
-            
-            if name == "اختر صنف":
-                return
-                
-            product_price = get_product_price(name)
-            if product_price is not None:
- 
-                price_var.set(f"{float(product_price):.2f}")
-        except Exception as e:
-            print(f"Error updating price: {e}")
-            price_var.set("0.00")
-    def calculate_total(*args):
-        try:
-            price = float(price_var.get())
-            qty = int(qty_var.get())
-            total_var.set(f"{price * qty:.2f}")
-        except ValueError:
-            total_var.set("0.00")
-
-    
-    def save():
-        global username
-        option = value_inside.get().strip()
-        barcode = barcodeEntry.get().strip()
-        price = price_var.get().strip()
-        qty = qty_var.get().strip()
-        min_qty = min_qty_var.get().strip()
-
-        if option == "اختر صنف" or not qty:
-            messagebox.showerror("خطأ", "يجب اختيار الصنف والكمية")
-            return
-
-        try:
-            qty = int(qty)
-            price = float(price) if price else None
-            min_qty = int(min_qty) if min_qty else None
-        except ValueError:
-            messagebox.showerror("خطأ", "البيانات غير صحيحة")
-            return
-
-        try:
-            admin_add_stock(
-                product_name=option,
-                added_qty=qty,
-                new_price=price,
-                new_barcode=barcode,
-                new_min_qty=min_qty,
-                user_id=get_user_id(username),   # TODO: replace with logged-in admin ID
-                note="إضافة مخزن"
-            )
-        except Exception as e:
-            messagebox.showerror("خطأ", str(e))
-            return
-
-        messagebox.showinfo("تم", "تمت إضافة الكمية بنجاح")
-        win.destroy()
-
-    def scan():
-        cap = cv2.VideoCapture(0)
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            for barcode in decode(frame):
-                barcode_data = barcode.data.decode("utf-8")
-                barcodeEntry.delete(0, END)
-                barcodeEntry.insert(0, barcode_data)
-
-                cap.release()
-                cv2.destroyAllWindows()
-                return
-            cv2.imshow("Scan Barcode - Press Q to cancel", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        cap.release()
-        cv2.destroyAllWindows()
-
-    card = customtkinter.CTkFrame(
-        win,
-        fg_color=card_color,
-        corner_radius=18
-    )
-    card.pack(fill=BOTH, expand=True, padx=20, pady=20)
-
-    card.grid_columnconfigure(0, weight=1)
-    card.grid_columnconfigure(1, weight=2)
-
-    def field(label, row, var=None, readonly=False):
-        customtkinter.CTkLabel(
-            card,
-            text=label,
-            anchor="e",
-            font=("Arial", 20),
-            text_color=text_color
-        ).grid(row=row, column=1, sticky="e", padx=10, pady=10)
-
-        entry = customtkinter.CTkEntry(
-            card,
-            textvariable=var,
-            height=42,
-            font=("Arial", 22),
-            justify="center",
-            corner_radius=8,
-            state="readonly" if readonly else "normal"
-        )
-        entry.grid(row=row, column=0, sticky="ew", padx=10, pady=10)
-        return entry
-
-    
-
-    option_list = get_number_of_products()
-    dateEntry = field("الوقت", 0)
-    dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    
-    customtkinter.CTkLabel(
-        card,
-        text=" اختر الصنف ",
-        anchor="e",
-        font=("Arial", 20),
-        text_color=text_color
-    ).grid(row=1, column=1,sticky="ew" ,padx=10, pady=10)
-
-    
-
-    value_inside.set("اختر صنف")
-
-    optionMenu = customtkinter.CTkOptionMenu(
-        card,
-        variable=value_inside,
-        values=option_list,
-        height=42,
-        font=("Arial", 22),
-        anchor="center",
-        corner_radius=8,
-    )
-    optionMenu.grid(row=1, column=0,sticky="ew" ,padx=10, pady=10)
-
-    barcodeEntry = field("الباركود", 2)
-    priceEntry = field("السعر", 3, price_var)
-    qtyEntry = field("الكمية", 4, qty_var)
-    minQtyEntry = field("الحد الأدنى", 5, min_qty_var)
-    totalEntry = field("الإجمالي", 6, total_var, readonly=True)
-
-
-    footer = customtkinter.CTkFrame(win, fg_color="transparent")
-    footer.pack(fill=X, padx=20, pady=(0, 20))
-
-    footer.grid_columnconfigure(0, weight=1)
-    footer.grid_columnconfigure(1, weight=1)
-    footer.grid_columnconfigure(2, weight=1)
-
-    customtkinter.CTkButton(
-        footer,
-        text="📷 امسح الباركود",
-        height=44,
-        font=("Arial", 20, "bold"),
-        fg_color="#2a7fff",
-        command=scan
-    ).grid(row=0, column=1, padx=5, sticky="ew")
-
-    customtkinter.CTkButton(
-        footer,
-        text="💾 حفظ",
-        height=44,
-        font=("Arial", 20, "bold"),
-        fg_color="#22c55e",
-        command=save
-    ).grid(row=0, column=2, padx=5, sticky="ew")
-
-
-    price_var.trace_add("write", calculate_total)
-    qty_var.trace_add("write", calculate_total)
-    value_inside.trace_add("write", setPrice)
-
+    return _open_stock_adjustment(lambda: None)
 
 
 def open_search_update_page():
-    win = Toplevel()
-    win.title("البحث وتعديل البيانات")
-    win.geometry("1100x750") # Slightly wider for better breathing room
-    win.grid_columnconfigure(0, weight=2)
-    win.grid_columnconfigure(1, weight=1)
-
-    bg_color = ("#ffffff", "#121212") 
-    card_color = ("#f8f9fa", "#1e1e1e") 
-    text_color = ("#000000", "#ffffff")         
-    appearance = customtkinter.get_appearance_mode()
-
-    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
-    card = card_color[1] if appearance == "Dark" else card_color[0]
-    text = text_color[1] if appearance == "Dark" else text_color[0]
-
-    win.configure(bg=bg)
-
-    style = ttk.Style()
-    style.theme_use("default")
-
-    style.configure(
-        "Treeview",
-        background=card,
-        foreground=text,
-        rowheight=35,
-        fieldbackground=card,
-        bordercolor="#333333",
-        font=("Arial", 18)
-    )
-
-    style.configure(
-        "Treeview.Heading",
-        background=bg,
-        foreground=text,
-        font=("Arial", 18, "bold")
-    )
-
-    style.map(
-        "Treeview",
-        background=[("selected", "#333333")],
-        foreground=[("selected", "#ffffff")]
-    )
-
-
-    min_qty_var = StringVar()
-    price_var = StringVar()
-    qty_var = StringVar()
-    total_var = StringVar(value="0.0")
-
-    get_id = {}
-
-    def searchProduct(event=None): 
-        name = nameEntry.get().strip()
-        barcode = barcodeEntry.get().strip()
-
-       
-        if not name and not barcode:
-            load_all_products()
-            return
-
-       
-        products = get_product_by_name_or_barcode(name, barcode)
-        load_results(products)
-
-
-    def deleteProduct():
-        global username
-        if not selected_product_id:
-            messagebox.showwarning("تنبيه", "من فضلك اختر منتج أولاً")
-            return
-
-        confirm = messagebox.askyesno(
-            "تأكيد الحذف",
-            "هل أنت متأكد من حذف هذا المنتج نهائيًا؟\nسيتم تسجيل العملية في سجل المخزون."
-        )
-
-        if not confirm:
-            return
-
-        try:
-            delete_product(
-                pid=selected_product_id,
-                user_id=get_user_id(username)  # TODO: admin id الحقيقي
-            )
-
-            messagebox.showinfo("تم", "تم حذف المنتج بنجاح")
-
-            # refresh UI
-            load_all_products()
-
-            # clear fields
-            nameEntry.delete(0, END)
-            barcodeEntry.delete(0, END)
-            price_var.set("")
-            qty_var.set("")
-            min_qty_var.set("")
-            total_var.set("0.00")
-
-        except Exception as e:
-            messagebox.showerror("خطأ", str(e))
-
-        
-    def calculate_total(*args):
-        try:
-            price = float(price_var.get())
-            qty = int(qty_var.get())
-            total_var.set(f"{price * qty:.2f}")
-        except ValueError:
-            total_var.set("0.00")
-            
-    price_var.trace_add("write", calculate_total)
-    qty_var.trace_add("write", calculate_total)
-
-
-    main_container = customtkinter.CTkFrame(win, fg_color="transparent")
-    main_container.pack(fill=BOTH, expand=True, padx=20, pady=20)
-
-
-    leftFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, corner_radius=15)
-    leftFrame.pack(side=LEFT, fill=BOTH, expand=TRUE, padx=(0, 10))
-
-    selected_product_id = None
-    def on_select(event):
-        nonlocal selected_product_id
-
-        selected = tree.focus()
-        if not selected:
-            return
-
-        values = tree.item(selected, "values")
-
-        selected_product_id = values[0]
-
-        nameEntry.delete(0, END)
-        nameEntry.insert(0, values[1])
-
-        barcodeEntry.delete(0, END)
-        barcodeEntry.insert(0, values[2])
-
-        price_var.set(values[3])
-        qty_var.set(values[4])
-        min_qty_var.set(values[5])
-
-        
-
-
-    def load_results(products):
-        tree.delete(*tree.get_children())
-        for p in products:
-            tree.insert("", END, values=p)
-
-    def load_all_products():
-        products_from_database = get_products()
-        load_results(products_from_database)
-
-
-    columns = ("id", "name", "barcode", "price", "qty", "min_qty")
-
-    tree = ttk.Treeview(leftFrame, columns=columns, show="headings")
-
-    tree.heading("id", text="ID")
-    tree.heading("name", text="الاسم")
-    tree.heading("barcode", text="الباركود")
-    tree.heading("price", text="السعر")
-    tree.heading("qty", text="الكمية")
-    tree.heading("min_qty", text="الحد الادني")
-
-    tree.column("id", width=50, anchor=CENTER)
-    tree.column("name", width=150)
-    tree.column("barcode", width=120)
-    tree.column("price", width=80, anchor=CENTER)
-    tree.column("qty", width=80, anchor=CENTER)
-    tree.column("min_qty", width=80, anchor=CENTER)
-
-    tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
-    tree.bind("<<TreeviewSelect>>", on_select)
-
-    load_all_products()
-
-    rightFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, width=350, corner_radius=15)
-    rightFrame.pack(side=RIGHT, fill=Y, padx=(10, 0))
-
-    def update_product():
-        global username
-        if not selected_product_id:
-            messagebox.showwarning("Error", "No product selected")
-            return
-        name = nameEntry.get().strip()
-        barcode = barcodeEntry.get().strip()
-        price = price_var.get().strip()
-        qty = qty_var.get().strip()
-        min_qty = min_qty_var.get().strip()
-        update_product_data(
-            pid=selected_product_id,
-            name=name,
-            barcode=barcode,
-            price=price,
-            new_qty=qty,
-            min_qty=min_qty,
-            user_id=get_user_id(username)  # TODO: replace with logged-in admin
-        )
-        
-        messagebox.showinfo("Success", "Product updated")
-
-
-    def on_barcode_enter(event):
-        barcode = barcodeEntry.get().strip()
-        if barcode:
-            products = get_product_by_name_or_barcode("", barcode)
-            load_results(products)
-
-   
-
-
-    def on_name_enter(event):
-        name = nameEntry.get().strip()
-        if name:
-            products = get_product_by_name_or_barcode(name, "")  # empty barcode
-            load_results(products)
-    
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" الوقت ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=0, column=1,sticky="ew" ,padx=5, pady=5)
-    dateEntry = customtkinter.CTkEntry(
-        rightFrame,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    dateEntry.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-
-
-    dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text="اسم الصنف",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=1, column=1,sticky="ew" ,padx=5, pady=5)
-    nameEntry = customtkinter.CTkEntry(
-        rightFrame,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    nameEntry.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
-
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" الباركود ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=2, column=1,sticky="ew" ,padx=5, pady=5)
-    barcodeEntry = customtkinter.CTkEntry(
-        rightFrame,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    barcodeEntry.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" السعر ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=3, column=1,  sticky="ew", padx=5, pady=5)
-    
-    
-    priceEntry = customtkinter.CTkEntry(
-        rightFrame,
-        textvariable=price_var,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    priceEntry.grid(row=3, column=0,  sticky="ew", padx=5, pady=5)
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" الكمية ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=4, column=1,  sticky="ew", padx=5, pady=5)
-    quantityEntry = customtkinter.CTkEntry(
-        rightFrame,
-        textvariable=qty_var,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-        
-    )
-    quantityEntry.grid(row=4, column=0,  sticky="ew", padx=5, pady=5)
-    
-    
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" الحد الادني ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=5, column=1,  sticky="ew", padx=5, pady=5)
-    minQuantityEntry = customtkinter.CTkEntry(
-        rightFrame,
-        textvariable=min_qty_var,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-        
-    )
-    minQuantityEntry.grid(row=5, column=0,  sticky="ew", padx=5, pady=5)
-
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" الاجمالي ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=6, column=1,  sticky="ew", padx=5, pady=5)
-    totalEntry = customtkinter.CTkEntry(
-        rightFrame,
-        textvariable=total_var,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER,
-        state="readonly"
-        
-    )
-    totalEntry.grid(row=6, column=0,  sticky="ew", padx=5, pady=5)
-
-
-
-    buttons_frame = customtkinter.CTkFrame(rightFrame)
-    buttons_frame.grid(
-        row=7,
-        column=0,
-        columnspan=2,
-        sticky="ew",
-        pady=15
-    )
-
-    buttons_frame.grid_columnconfigure(0, weight=1)
-
-    customtkinter.CTkButton(
-        buttons_frame,
-        text=" مسح ",
-        height=50,
-        fg_color=("#000000", "#ffffff"), 
-        text_color=("#ffffff", "#000000"),
-        hover_color="#333333",
-        command=deleteProduct
-    ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
-
-    customtkinter.CTkButton(
-        buttons_frame,
-        text="التعديلات حفظ", 
-        fg_color=("#000000", "#ffffff"), 
-        text_color=("#ffffff", "#000000"), 
-        hover_color="#333333",
-        height=50,
-        command=update_product
-    ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-
-
-    barcodeEntry.bind("<Return>", on_barcode_enter)
-    nameEntry.bind("<Return>", on_name_enter)
-    nameEntry.bind("<KeyRelease>", lambda event: searchProduct())
-    barcodeEntry.bind("<KeyRelease>", lambda event: searchProduct())
-
-
-
-
+    return open_resource_window("products")
 
 
 def open_statistics_storage_page():
-    win = Toplevel()
-    win.title("ارصدة المخزن")
-    win.geometry("500x600")
-    win.grab_set()
-    bg_color = ("#ffffff", "#121212") 
-    card_color = ("#f8f9fa", "#1e1e1e") 
-    text_color = ("#000000", "#ffffff") 
-    appearance = customtkinter.get_appearance_mode()
-
-    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
-    card = card_color[1] if appearance == "Dark" else card_color[0]
-    text = text_color[1] if appearance == "Dark" else text_color[0]
-
-    win.configure(bg=bg)
-
-    style = ttk.Style()
-    style.theme_use("default")
-
-    style.configure(
-        "Treeview",
-        background=card,
-        foreground=text,
-        rowheight=35,
-        fieldbackground=card,
-        bordercolor="#333333",
-        font=("Arial", 18)
-    )
-
-    style.configure(
-        "Treeview.Heading",
-        background=bg,
-        foreground=text,
-        font=("Arial", 18, "bold")
-    )
-
-    style.map(
-        "Treeview",
-        background=[("selected", "#333333")],
-        foreground=[("selected", "#ffffff")]
-    )
-    
-    total_var = StringVar(value="0.00")
-    
-    def load_results(products):
-        tree.delete(*tree.get_children())
-        grand_total = 0.0
-
-        for p in products:
-            price = float(p[4])
-            qty = int(p[5])
-            row_total = price * qty
-            grand_total += row_total
-
-            tree.insert("", END, values=(
-                p[0], p[1], p[2], p[3],
-                f"{price:.2f}",
-                qty,
-                p[6],
-                f"{row_total:.2f}"
-            ))
-
-        total_var.set(f"{grand_total:.2f}")
-
-    def export_to_pdf():
-        c = canvas.Canvas("storage_report.pdf", pagesize=A4)
-        width, height = A4
-
-        c.setFont("Amiri", 15)
-        y = height - 50
-        c.drawRightString(width - 40, y, ar("تقرير أرصدة المخزن"))
-
-        y -= 40
-        c.setFont("Amiri", 11)
-
-        # RTL order (right ➜ left)
-        headers = [
-            "الإجمالي", "الحد الأدنى", "الكمية", "السعر",
-            "الباركود", "الاسم", "وقت الإضافة", "المعرف"
-        ]
-
-        header_line = (
-            f"{headers[7]:>6}   "    # المعرف
-            f"{headers[6]:>20}   "   # وقت الإضافة
-            f"{headers[5]:>18}   "   # الاسم
-            f"{headers[4]:>14}   "   # الباركود
-            f"{headers[3]:>8}   "    # السعر
-            f"{headers[2]:>8}   "    # الكمية
-            f"{headers[1]:>10}   "   # الحد الأدنى
-            f"{headers[0]:>10}"      # الإجمالي
-        )
-
-        c.drawRightString(width - 40, y, ar(header_line))
-        y -= 10
-        c.line(40, y, width - 40, y)
-
-        y -= 20
-        c.setFont("Amiri", 10)
-        row_height = 22
-
-        for item in tree.get_children():
-            v = tree.item(item)["values"]
-
-            row = (
-                f"{rtl_safe(v[7]):>10}   "   # الإجمالي
-                f"{rtl_safe(v[6]):>10}   "   # الحد الأدنى
-                f"{rtl_safe(v[5]):>8}   "    # الكمية
-                f"{rtl_safe(v[4]):>8}   "    # السعر
-                f"{rtl_safe(v[3]):>14}   "   # الباركود
-                f"{rtl_safe(v[2]):>18}   "             # الاسم (English OK)
-                f"{rtl_safe(v[1]):>20}   "   # وقت الإضافة
-                f"{rtl_safe(v[0]):>6}"       # المعرف
-            )
-
-            c.drawRightString(width - 40, y, row)
-            y -= row_height
-
-            if y < 70:
-                c.showPage()
-                c.setFont("Amiri", 10)
-                y = height - 50
-
-        y -= 10
-        c.setFont("Amiri", 13)
-        c.drawRightString(
-            width - 40,
-            y,
-            ar(f"الإجمالي الكلي: {total_var.get()}")
-        )
-
-        c.save()
-        messagebox.showinfo("تم", "تم إنشاء ملف PDF عربي بنجاح")
-
-
-
-
-    def load_all_products_storage():
-        products_from_database = get_products_storage()
-        load_results(products_from_database)
-
-    
-    columns = ("id", "created_at","name", "barcode", "price", "qty", "min_qty", "total")
-
-    table_frame = Frame(win)
-    table_frame.pack(fill=BOTH, expand=True)
-    
-    
-
-    tree = ttk.Treeview(
-        table_frame,
-        columns=columns,
-        show="headings"
-    )
-
-    tree.heading("id", text="ID")
-    tree.heading("created_at", text="وقت الاضافة")
-    tree.heading("name", text="الاسم")
-    tree.heading("barcode", text="الباركود")
-    tree.heading("price", text="السعر")
-    tree.heading("qty", text="الكمية")
-    tree.heading("min_qty", text="الحد الادني")
-    tree.heading("total", text="الاجمالي")
-
-    tree.column("id", width=50, anchor=CENTER)
-    tree.column("created_at", width=50, anchor=CENTER)
-    tree.column("name", width=150)
-    tree.column("barcode", width=120)
-    tree.column("price", width=80, anchor=CENTER)
-    tree.column("qty", width=80, anchor=CENTER)
-    tree.column("min_qty", width=80, anchor=CENTER)
-    tree.column("total", width=100, anchor=CENTER)
-
-    tree.pack(fill=BOTH, expand=True)
-
-    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=scrollbar.set)
-
-    tree.pack(side=LEFT, fill=BOTH, expand=True)
-    scrollbar.pack(side=RIGHT, fill=Y)
-
-    footer = customtkinter.CTkFrame(
-        win,
-        fg_color=card,
-        corner_radius=12
-    )
-    footer.pack(fill=X, padx=10, pady=10)
-
-    footer.grid_columnconfigure(0, weight=1)
-    footer.grid_columnconfigure(1, weight=0)
-    footer.grid_columnconfigure(2, weight=0)
-
-    customtkinter.CTkLabel(
-        footer,
-        text="إجمالي قيمة المخزن :",
-        font=("Arial", 20, "bold"),
-        text_color=text
-    ).grid(row=0, column=2, padx=10, pady=10, sticky="e")
-
-    customtkinter.CTkEntry(
-        footer,
-        textvariable=total_var,
-        font=("Arial", 22),
-        justify="center",
-        state="readonly",
-        width=160,   # ✅ real width
-        height=36
-    ).grid(row=0, column=1, padx=10, pady=10)
-
-    pdfButton = customtkinter.CTkButton(
-        footer,
-        text="📄 تصدير PDF",
-        command=export_to_pdf,
-        font=("Arial", 20, "bold"),
-        width=180,
-        height=40,
-        fg_color="#1f3b4d",
-        hover_color="#2a4f6b"
-    )
-    pdfButton.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-
-    load_all_products_storage()
-
+    return open_resource_window("stock_levels")
 
 
 def open_products_shortage_page():
-    win = Toplevel()
-    win.title("ارصدة المخزن")
-    win.geometry("500x600")
-    win.grab_set()
-    bg_color = ("#ffffff", "#121212") 
-    card_color = ("#f8f9fa", "#1e1e1e") 
-    text_color = ("#000000", "#ffffff") 
-    appearance = customtkinter.get_appearance_mode()
+    return open_resource_window("low_stock_products")
 
-    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
-    card = card_color[1] if appearance == "Dark" else card_color[0]
-    text = text_color[1] if appearance == "Dark" else text_color[0]
-
-    win.configure(bg=bg)
-
-    style = ttk.Style()
-    style.theme_use("default")
-
-    style.configure(
-        "Treeview",
-        background=card,
-        foreground=text,
-        rowheight=35,
-        fieldbackground=card,
-        bordercolor="#333333",
-        font=("Arial", 18)
-    )
-
-    style.configure(
-        "Treeview.Heading",
-        background=bg,
-        foreground=text,
-        font=("Arial", 18, "bold")
-    )
-
-    style.map(
-        "Treeview",
-        background=[("selected", "#333333")],
-        foreground=[("selected", "#ffffff")]
-    )
-    
-    total_var = StringVar(value="0.00")
-    
-    def load_results(products):
-        tree.delete(*tree.get_children())
-        grand_total = 0.0
-
-        for p in products:
-            price = float(p[4])
-            qty = int(p[5])
-            row_total = price * qty
-            grand_total += row_total
-
-            tree.insert("", END, values=(
-                p[0], p[1], p[2], p[3],
-                f"{price:.2f}",
-                qty,
-                p[6],
-                f"{row_total:.2f}"
-            ))
-
-        total_var.set(f"{grand_total:.2f}")
-
-    def export_to_pdf():
-        c = canvas.Canvas("storage_report.pdf", pagesize=A4)
-        width, height = A4
-
-        c.setFont("Amiri", 15)
-        y = height - 50
-        c.drawRightString(width - 40, y, ar("تقرير أرصدة المخزن"))
-
-        y -= 40
-        c.setFont("Amiri", 11)
-
-        # RTL order (right ➜ left)
-        headers = [
-            "الإجمالي", "الحد الأدنى", "الكمية", "السعر",
-            "الباركود", "الاسم", "وقت الإضافة", "المعرف"
-        ]
-
-        header_line = (
-            f"{headers[7]:>6}   "    # المعرف
-            f"{headers[6]:>20}   "   # وقت الإضافة
-            f"{headers[5]:>18}   "   # الاسم
-            f"{headers[4]:>14}   "   # الباركود
-            f"{headers[3]:>8}   "    # السعر
-            f"{headers[2]:>8}   "    # الكمية
-            f"{headers[1]:>10}   "   # الحد الأدنى
-            f"{headers[0]:>10}"      # الإجمالي
-        )
-
-        c.drawRightString(width - 40, y, ar(header_line))
-        y -= 10
-        c.line(40, y, width - 40, y)
-
-        y -= 20
-        c.setFont("Amiri", 10)
-        row_height = 22
-
-        for item in tree.get_children():
-            v = tree.item(item)["values"]
-
-            row = (
-                f"{rtl_safe(v[7]):>10}   "   # الإجمالي
-                f"{rtl_safe(v[6]):>10}   "   # الحد الأدنى
-                f"{rtl_safe(v[5]):>8}   "    # الكمية
-                f"{rtl_safe(v[4]):>8}   "    # السعر
-                f"{rtl_safe(v[3]):>14}   "   # الباركود
-                f"{rtl_safe(v[2]):>18}   "             # الاسم (English OK)
-                f"{rtl_safe(v[1]):>20}   "   # وقت الإضافة
-                f"{rtl_safe(v[0]):>6}"       # المعرف
-            )
-
-            c.drawRightString(width - 40, y, row)
-            y -= row_height
-
-            if y < 70:
-                c.showPage()
-                c.setFont("Amiri", 10)
-                y = height - 50
-
-        y -= 10
-        c.setFont("Amiri", 13)
-        c.drawRightString(
-            width - 40,
-            y,
-            ar(f"الإجمالي الكلي: {total_var.get()}")
-        )
-
-        c.save()
-        messagebox.showinfo("تم", "تم إنشاء ملف PDF عربي بنجاح")
-
-
-
-
-    def load_all_products_storage():
-        products_from_database = get_low_stock_products()
-        load_results(products_from_database)
-
-    
-    columns = ("id", "created_at","name", "barcode", "price", "qty", "min_qty", "total")
-
-    table_frame = Frame(win)
-    table_frame.pack(fill=BOTH, expand=True)
-    
-    
-
-    tree = ttk.Treeview(
-        table_frame,
-        columns=columns,
-        show="headings"
-    )
-
-    tree.heading("id", text="ID")
-    tree.heading("created_at", text="وقت الاضافة")
-    tree.heading("name", text="الاسم")
-    tree.heading("barcode", text="الباركود")
-    tree.heading("price", text="السعر")
-    tree.heading("qty", text="الكمية")
-    tree.heading("min_qty", text="الحد الادني")
-    tree.heading("total", text="الاجمالي")
-
-    tree.column("id", width=50, anchor=CENTER)
-    tree.column("created_at", width=50, anchor=CENTER)
-    tree.column("name", width=150)
-    tree.column("barcode", width=120)
-    tree.column("price", width=80, anchor=CENTER)
-    tree.column("qty", width=80, anchor=CENTER)
-    tree.column("min_qty", width=80, anchor=CENTER)
-    tree.column("total", width=100, anchor=CENTER)
-
-    tree.pack(fill=BOTH, expand=True)
-
-    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=scrollbar.set)
-
-    tree.pack(side=LEFT, fill=BOTH, expand=True)
-    scrollbar.pack(side=RIGHT, fill=Y)
-
-    footer = customtkinter.CTkFrame(
-        win,
-        fg_color=card,
-        corner_radius=12
-    )
-    footer.pack(fill=X, padx=10, pady=10)
-
-    footer.grid_columnconfigure(0, weight=1)
-    footer.grid_columnconfigure(1, weight=0)
-    footer.grid_columnconfigure(2, weight=0)
-
-    customtkinter.CTkLabel(
-        footer,
-        text="إجمالي قيمة المخزن :",
-        font=("Arial", 20, "bold"),
-        text_color=text
-    ).grid(row=0, column=2, padx=10, pady=10, sticky="e")
-
-    customtkinter.CTkEntry(
-        footer,
-        textvariable=total_var,
-        font=("Arial", 22),
-        justify="center",
-        state="readonly",
-        width=160,   # ✅ real width
-        height=36
-    ).grid(row=0, column=1, padx=10, pady=10)
-
-    pdfButton = customtkinter.CTkButton(
-        footer,
-        text="📄 تصدير PDF",
-        command=export_to_pdf,
-        font=("Arial", 20, "bold"),
-        width=180,
-        height=40,
-        fg_color="#1f3b4d",
-        hover_color="#2a4f6b"
-    )
-    pdfButton.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-
-    load_all_products_storage()
 
 def open_inventory_history_page():
-    win = Toplevel()
-    win.title("سجل حركة المخزون")
-    win.geometry("900x600")
-    win.grab_set()
-
-    bg_color = ("#ffffff", "#121212")
-    card_color = ("#f8f9fa", "#1e1e1e")
-    text_color = ("#000000", "#ffffff")
-
-    appearance = customtkinter.get_appearance_mode()
-    win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
-    # needs to be updated
-    def export_excel():
-        rows = get_inventory_history(
-            from_var.get() or None,
-            to_var.get() or None
-        )
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Inventory History"
-
-        headers = [
-            "ID", "Date", "Product", "Action",
-            "Old Qty", "Change", "New Qty", "infinite",
-            "Old Price", "New Price", "Note"
-        ]
-        ws.append(headers)
-
-        for r in rows:
-            ws.append(r)
-
-        filename = "inventory_history.xlsx"
-        wb.save(filename)
-
-        messagebox.showinfo("تم", "تم تصدير ملف Excel بنجاح")
-    # needs to be updated
-    def export_pdf():
-        rows = get_inventory_history(
-            from_var.get() or None,
-            to_var.get() or None
-        )
-
-        c = canvas.Canvas("inventory_history.pdf", pagesize=A4)
-        width, height = A4
-        y = height - 45
-
-        # ---------- TITLE ----------
-        c.setFont("Amiri", 16)
-        c.drawCentredString(width / 2, y, ar("سجل حركة المخزون"))
-        y -= 30
-
-        # ---------- TABLE STRUCTURE ----------
-        c.setFont("Amiri", 9)
-
-        columns = [
-            ("ID",          width - 560, lambda r: r[0]),
-            ("الوقت",       width - 460, lambda r: r[1]),
-            ("المنتج",      width - 380, lambda r: r[2]),
-            ("العملية",     width - 340, lambda r: r[3]),
-            ("الكمية قبل",  width - 280, lambda r: r[4]),
-            ("التغير",      width - 230, lambda r: r[5]),
-            ("الكمية بعد",  width - 180, lambda r: r[6]),
-            ("السعر قبل",   width - 130, lambda r: f"{r[7]:.2f}" if r[7] is not None else ""),
-            ("السعر بعد",   width - 80,  lambda r: f"{r[8]:.2f}" if r[8] is not None else ""),
-            ("ملاحظة",      width - 20,  lambda r: r[9]),
-        ]
-
-        # ---------- HEADER ----------
-        for title, x, _ in columns:
-            c.drawRightString(x, y, ar(title))
-
-        y -= 12
-        c.line(20, y, width - 20, y)
-        y -= 12
-
-        # ---------- ROWS ----------
-        for r in rows:
-            for _, x, getter in columns:
-                c.drawRightString(x, y, rtl_safe(getter(r)))
-
-            y -= 16
-
-            if y < 60:
-                c.showPage()
-                c.setFont("Amiri", 9)
-                y = height - 45
-
-        c.save()
-        messagebox.showinfo("تم", "تم تصدير ملف PDF بنجاح")
-
-        
-   
-    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
-    card = card_color[1] if appearance == "Dark" else card_color[0]
-    text = text_color[1] if appearance == "Dark" else text_color[0]
-
-    style = ttk.Style()
-    style.theme_use("default")
-
-    style.configure(
-        "Treeview",
-        background=card,
-        foreground=text,
-        rowheight=35,
-        fieldbackground=card,
-        bordercolor="#333333",
-        font=("Arial", 18)
-    )
-
-    style.configure(
-        "Treeview.Heading",
-        background=bg,
-        foreground=text,
-        font=("Arial", 18, "bold")
-    )
-
-    style.map(
-        "Treeview",
-        background=[("selected", "#333333")],
-        foreground=[("selected", "#ffffff")]
-    )
-
-    columns = (
-        "id",
-        "created_at",
-        "name",
-        "action",
-        "old_qty",
-        "change",
-        "new_qty",
-        "infinite",
-        "old_price",
-        "new_price",
-        "note"
-    )
-
-    filter_frame = customtkinter.CTkFrame(
-    win,
-    fg_color=card_color[1] if appearance == "Dark" else card_color[0],
-    corner_radius=12
-    )
-    filter_frame.pack(fill=X, padx=10, pady=10)
-
-    from_var = StringVar()
-    to_var = StringVar()
-
-    customtkinter.CTkLabel(
-        filter_frame, text="من:", font=("Arial", 16)
-    ).grid(row=0, column=0, padx=8, pady=8)
-
-    from_entry = customtkinter.CTkEntry(
-        filter_frame,
-        textvariable=from_var,
-        placeholder_text="YYYY-MM-DD",
-        width=140
-    )
-    from_entry.grid(row=0, column=1, padx=8)
-
-    customtkinter.CTkLabel(
-        filter_frame, text="إلى:", font=("Arial", 16)
-    ).grid(row=0, column=2, padx=8)
-
-    to_entry = customtkinter.CTkEntry(
-        filter_frame,
-        textvariable=to_var,
-        placeholder_text="YYYY-MM-DD",
-        width=140
-    )
-    to_entry.grid(row=0, column=3, padx=8)
-
-
-    table_frame = Frame(win)
-    table_frame.pack(fill=BOTH, expand=True)
-
-    tree = ttk.Treeview(
-        table_frame,
-        columns=columns,
-        show="headings"
-    )
-
-    tree.heading("id", text="ID")
-    tree.heading("created_at", text="الوقت")
-    tree.heading("name", text="المنتج")
-    tree.heading("action", text="العملية")
-    tree.heading("old_qty", text="الكمية قبل")
-    tree.heading("change", text="التغير")
-    tree.heading("new_qty", text="الكمية بعد")
-    tree.heading("infinite", text="كمية غير محدودة")
-    tree.heading("old_price", text="السعر قبل")
-    tree.heading("new_price", text="السعر بعد")
-    tree.heading("note", text="ملاحظة")
-
-    tree.column("id", width=50, anchor=CENTER)
-    tree.column("created_at", width=150, anchor=CENTER)
-    tree.column("name", width=160)
-    tree.column("action", width=90, anchor=CENTER)
-    tree.column("old_qty", width=90, anchor=CENTER)
-    tree.column("change", width=90, anchor=CENTER)
-    tree.column("new_qty", width=90, anchor=CENTER)
-    tree.column("infinite", width=90, anchor=CENTER)
-    tree.column("old_price", width=90, anchor=CENTER)
-    tree.column("new_price", width=90, anchor=CENTER)
-    tree.column("note", width=200)
-
-    tree.pack(side=LEFT, fill=BOTH, expand=True)
-
-    scrollbar = ttk.Scrollbar(
-        table_frame,
-        orient="vertical",
-        command=tree.yview
-    )
-    tree.configure(yscrollcommand=scrollbar.set)
-    scrollbar.pack(side=RIGHT, fill=Y)
-
-    def load_history():
-        tree.delete(*tree.get_children())
-
-        rows = get_inventory_history(
-            from_var.get() or None,
-            to_var.get() or None
-        )
-
-        for r in rows:
-            tree.insert("", END, values=(
-                r[0], r[1], r[2], r[3],
-                r[4], r[5], r[6],r[7],
-                f"{r[8]:.2f}" if r[8] is not None else "",
-                f"{r[9]:.2f}" if r[9] is not None else "",
-                r[10] or ""
-            ))
-
-    customtkinter.CTkButton(
-        filter_frame,
-        text="تطبيق",
-        width=120,
-        height=36,
-        font=("Arial", 16, "bold"),
-        fg_color="#1f3b4d",
-        command=load_history
-    ).grid(row=0, column=4, padx=10)
-
-    export_frame = customtkinter.CTkFrame(win, corner_radius=12)
-    export_frame.pack(fill=X, padx=10, pady=10)
-
-    customtkinter.CTkButton(
-        export_frame,
-        text="📄 تصدير PDF",
-        width=160,
-        height=40,
-        font=("Arial", 18, "bold"),
-        command=export_pdf,
-        fg_color="#1f3b4d"
-    ).pack(side=LEFT, padx=10)
-
-    customtkinter.CTkButton(
-        export_frame,
-        text="📊 تصدير Excel",
-        width=160,
-        height=40,
-        font=("Arial", 18, "bold"),
-        command=export_excel,
-        fg_color="#2a7f62"
-    ).pack(side=LEFT, padx=10)
-
-    load_history()
+    return open_resource_window("stock_movements")
 
 
 def open_statistics_page():
-    win = Toplevel()
-    win.title("التقارير")
-    win.geometry("500x600")
-    win.grab_set()
-
-    bg_color = ("#ffffff", "#121212")
-    card_color = ("#f8f9fa", "#1e1e1e")
-    text_color = ("#000000", "#ffffff")
-
-    appearance = customtkinter.get_appearance_mode()
-    win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
-
-    win.grid_columnconfigure(0, weight=1)
-    win.grid_columnconfigure(1, weight=1)
-
-    buttons = [
-        ("ارصدة النواقص", open_products_shortage_page),
-        ("ارصدة المخزن", open_statistics_storage_page),
-        ("سجل حركة المخزون", open_inventory_history_page),
-        # TO DO  1 - customers log
-        #        2 - sale_items
-        #        3 - sales
-    ]
-
-    row = col = 0
-
-    for text, cmd in buttons:
-        btn = customtkinter.CTkButton(
-            win,
-            text=text,
-            width=180,
-            height=100,
-            font=("Arial", 20, "bold"),
-            command=cmd,
-            text_color="white",
-            fg_color="#1f3b4d"
-        )
-        btn.grid(row=row, column=col, padx=15, pady=15)
-
-        col += 1
-        if col > 1:
-            col = 0
-            row += 1
+    colors = _appearance_colors()
+    win = ctk.CTkToplevel(_root)
+    win.title("التقارير والتدقيق")
+    win.geometry("520x560")
+    win.configure(fg_color=colors["bg"])
+    win.transient(_root); win.grab_set()
+    ctk.CTkLabel(win, text="التقارير والتدقيق", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=18)
+    for label, resource in [("الأصناف منخفضة المخزون", "low_stock_products"), ("تقييم تقريبي للمخزون", "stock_valuation"),
+                            ("أرصدة العملاء", "customer_balances"), ("أرصدة الموردين", "supplier_balances"),
+                            ("القيود غير المتوازنة", "unbalanced_entries"), ("سجل التدقيق", "audit_log")]:
+        ctk.CTkButton(win, text=label, height=42, command=lambda r=resource: open_resource_window(r),
+                      fg_color=colors["accent"]).pack(fill="x", padx=36, pady=5)
+    ctk.CTkButton(win, text="إغلاق", command=win.destroy, fg_color="#6b7280").pack(pady=18)
 
 
-# to do
-# handle that if item is un limited there's no restricting on selling
 def open_sells_admin():
-    win = Toplevel()
-    win.title("صفحة البيع ")
-    win.geometry("900x600")
-    win.grab_set()
+    return open_resource_window("sales")
 
-    bg_color = ("#ffffff", "#121212")
-    card_color = ("#f8f9fa", "#1e1e1e")
-    text_color = ("#000000", "#ffffff")
-   
-
-    appearance = customtkinter.get_appearance_mode()
-    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
-    card = card_color[1] if appearance == "Dark" else card_color[0]
-    text = text_color[1] if appearance == "Dark" else text_color[0]
-    win.configure(bg=bg_color[1] if appearance == "Dark" else bg_color[0])
-
-    main = customtkinter.CTkFrame(win, fg_color="transparent")
-    main.pack(fill=BOTH, expand=True, padx=15, pady=15)
-
-
-    # ================= LEFT (SALE FORM) =================
-    left = customtkinter.CTkFrame(main, fg_color=card, corner_radius=15)
-    left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-
-
-    
-
-    style = ttk.Style()
-    style.theme_use("default")
-
-    style.configure(
-        "Treeview",
-        background=card,
-        foreground=text,
-        rowheight=35,
-        fieldbackground=card,
-        bordercolor="#333333",
-        font=("Arial", 18)
-    )
-
-    style.configure(
-        "Treeview.Heading",
-        background=bg,
-        foreground=text,
-        font=("Arial", 18, "bold")
-    )
-
-    style.map(
-        "Treeview",
-        background=[("selected", "#333333")],
-        foreground=[("selected", "#ffffff")]
-    )
-
-    tree = ttk.Treeview(
-        left,
-        columns=("id","name", "barcode", "price", "qty","total"),
-        show="headings"
-    )
-
-    for col, txt, w in [
-        ("id", "ID", 40),
-        ("name", "الاسم", 150),
-        ("barcode", "باركود", 120),
-        ("price", "السعر", 80),
-        ("qty", "الكمية", 80),
-        ("total", "الاجمالي", 80),
-    ]:
-        tree.heading(col, text=txt)
-        tree.column(col, width=w, anchor=CENTER)
-
-    tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
-    
-    
-
-    right = customtkinter.CTkFrame(main, fg_color=card, corner_radius=15, width=380)
-    right.pack(side=RIGHT, fill=Y)
-    right.pack_propagate(False)
-
-
-    product_id = None
-    qty_var = StringVar(value="1")
-    paid_var = StringVar()
-    customer_name = StringVar()
-    customer_phone = StringVar()
-    customer_paid_var = StringVar()
-    is_customer = BooleanVar(value=False)
-
-
-    def search_and_add(event=None):
-        value = name_entry.get().strip()
-        if not value:
-            return
-
-        products = get_product_by_name_or_barcode_sells(value)
-
-        if not products:
-            messagebox.showwarning("تنبيه", "المنتج غير موجود")
-            return
-
-        product = products[0]  # take first match
-        add_or_increase_product(product)
-
-        name_entry.delete(0, END)
-
-    def add_or_increase_product(product, qty=1):
-        product_id, name, barcode, price, stock, _ = product
-
-        for item in tree.get_children():
-            values = list(tree.item(item, "values"))
-            if int(values[0]) == product_id:
-                new_qty = int(values[4]) + qty
-                total = new_qty * float(values[3])
-                values[4] = new_qty
-                values[5] = f"{total:.2f}"
-                tree.item(item, values=values)
-                return
-
-        tree.insert(
-            "",
-            END,
-            values=(
-                product_id,
-                name,
-                barcode,
-                f"{price:.2f}",
-                qty,
-                f"{price * qty:.2f}"
-            )
-        )
-
-
-    def increase_quantity(event=None):
-        item = tree.focus()
-        if not item:
-            return
-
-        values = list(tree.item(item, "values"))
-
-        price = float(values[3])
-        qty = int(values[4]) + 1
-        total = price * qty
-        paid_var.set(total)
-        values[4] = qty
-        values[5] = f"{total:.2f}"
-
-        tree.item(item, values=values)
-
-    def delete_selected_item(event=None):
-        item = tree.focus()
-        if not item:
-            return
-        tree.delete(item)
-
-
-    def select_product(event):
-        nonlocal product_id
-        item = tree.focus()
-        if not item:
-            return
-
-        values = tree.item(item, "values")
-        product_id = int(values[0])
-
-        tree.focus_set()
-
-    tree.bind("<<TreeviewSelect>>", select_product)
-    name_entry = customtkinter.CTkEntry(
-        right, placeholder_text="اسم المنتج أو الباركود",
-        font=("Arial", 18)
-    )
-    
-
-   
-
-
-    def toggle_customer():
-        if is_customer.get():
-            customer_frame.pack(
-                before=confirmation_button,
-                fill=X,
-                padx=15,
-                pady=10
-            )
-        else:
-            customer_frame.pack_forget()
-            customer_name.set("")
-            customer_phone.set("")
-            customer_paid_var.set("")
-
-
-    name_entry.pack(fill=X, padx=10, pady=5)
-
-    customtkinter.CTkCheckBox(
-        right,
-        text="عميل",
-        variable=is_customer,
-        command=toggle_customer,
-        font=("Arial", 18)
-    ).pack(pady=10)
-
-    customer_frame = customtkinter.CTkFrame(right, fg_color="transparent")
-
-    
-
-
-    customerNameEntry = customtkinter.CTkEntry(
-        customer_frame,
-        textvariable=customer_name,
-        placeholder_text= "",
-        font=("Arial", 18)
-    )
-    
-    customerPhoneEntry = customtkinter.CTkEntry(
-        customer_frame,
-        textvariable=customer_phone,
-        placeholder_text= "رقم العميل",
-        font=("Arial", 18)
-    )
-    
-    paid_amount = customtkinter.CTkEntry(
-        customer_frame,
-        textvariable=customer_paid_var,
-        placeholder_text= "المبلغ المدفوع",
-        font=("Arial", 18)
-    )
-
-    customtkinter.CTkLabel(
-        customer_frame,
-        text="اسم العميل",
-        font=("Arial", 18)
-    ).pack(fill=X, padx=10, pady=5)
-
-    customerNameEntry.pack(fill=X, padx=10, pady=5)
-
-    customtkinter.CTkLabel(
-        customer_frame,
-        text="رقم العميل",
-        font=("Arial", 18)
-    ).pack(fill=X, padx=10, pady=5)
-
-    customerPhoneEntry.pack(fill=X, padx=10, pady=5)
-
-    customtkinter.CTkLabel(
-        customer_frame,
-        text="المبلغ المدفوع",
-        font=("Arial", 18)
-    ).pack(fill=X, padx=10, pady=5)
-    paid_amount.pack(fill=X, padx=10, pady=5)
-
-    def confirm_sale():
-        global username
-
-        if is_customer.get():
-            if not customer_name.get().strip():
-                messagebox.showerror("خطأ", "يرجى إدخال اسم العميل")
-                return
-
-            if not customer_phone.get().strip():
-                messagebox.showerror("خطأ", "يرجى إدخال رقم العميل")
-                return
-
-            if not customer_paid_var.get().strip():
-                messagebox.showerror("خطأ", "يرجى إدخال المبلغ المدفوع")
-                return
-
-
-        items = []
-        total_amount = 0.0
-
-        for item in tree.get_children():
-            values = tree.item(item, "values")
-
-            pid = int(values[0])
-            qty = int(values[4])
-            total = float(values[5])
-
-            items.append((pid, qty))
-            total_amount += total
-
-        if not items:
-            messagebox.showerror("خطأ", "لا يوجد منتجات في الفاتورة")
-            return
-
-        cashier_id = get_user_id(username)
-
-        customer_id = None
-        if is_customer.get():
-            customer_id = get_or_create_customer(
-                customer_name.get().strip(),
-                customer_phone.get().strip()
-            )
-        amount_paid = float(customer_paid_var.get()) if is_customer.get() else total_amount
-        ok, msg = Database.sell_product(
-            cashier_id=cashier_id,
-            items=items,
-            amount_paid=amount_paid,
-            customer_id=customer_id
-        )
-
-        messagebox.showinfo("النتيجة", msg)
-
-
-        tree.delete(*tree.get_children())
-        customer_paid_var.set("")
-        customer_name.set("")
-        customer_phone.set("")
-        is_customer.set(False)
-        customer_frame.pack_forget()
-
-    def open_restore_dialog():
-        dialog = customtkinter.CTkToplevel()
-        dialog.title("استرجاع بيع")
-        dialog.geometry("400x250")
-        dialog.grab_set()
-
-        customtkinter.CTkLabel(dialog, text="رقم البيع").pack(pady=(20, 5))
-        sale_id_entry = customtkinter.CTkEntry(dialog)
-        sale_id_entry.pack(pady=5)
-
-        customtkinter.CTkLabel(dialog, text="اسم العميل (اختياري)").pack(pady=(15, 5))
-        customer_entry = customtkinter.CTkEntry(dialog)
-        customer_entry.pack(pady=5)
-
-        def submit():
-            restore_sale(
-                sale_id_entry.get(),
-                customer_entry.get().strip(),
-                dialog
-            )
-
-        customtkinter.CTkButton(
-            dialog,
-            text="استرجاع",
-            command=submit
-        ).pack(pady=20)
-
-
-    def restore_sale(sale_id_input, customer_name_input, dialog):
-
-        try:
-            sale_id = int(sale_id_input)
-        except (ValueError, TypeError):
-            messagebox.showerror("خطأ", "رقم البيع غير صالح")
-            return
-
-        cashier_id = get_user_id(username)  # make sure 'username' is defined
-
-        # Fetch items
-        items = get_sale_items(sale_id)
-        if not items:
-            messagebox.showerror("خطأ", f"لا يوجد بيع بالرقم {sale_id}")
-            return
-
-        
-       
-        conn = Database.get_connection()
-        try:
-            c = conn.cursor()
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            total_amount = 0
-
-            for item in items:
-                total_amount += item['price'] * item['qty']
-
-                c.execute("UPDATE products SET quantity = quantity + ? WHERE id=?", (item['qty'], item['product_id']))
-
-                # Log inventory restoration
-                c.execute("""INSERT INTO inventory_log
-                             (product_id, created_at, old_price, new_price, old_quantity, quantity_change, new_quantity, action, user_id, note)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                          (item['product_id'], now, item['price'], item['price'], 0, item['qty'], 0,
-                           "RESTORE", cashier_id, f"Restored sale ID {sale_id}"))
-                
-                products = get_product_by_id(item['product_id'])
-                print(products)
-                if products:
-                    tree.insert(
-                        "",
-                        END,
-                        values=(
-                            products[0],          # product_id
-                            products[1],          # name
-                            products[2],          # barcode
-                            f"{item['price']:.2f}",
-                            item['qty'],
-                            f"{item['price'] * item['qty']:.2f}"
-                        )
-                    )
-            if customer_name_input:
-                print(customer_name_input)
-                c.execute("SELECT id FROM customers WHERE name = ?", (customer_name_input,))
-                
-                row = c.fetchone()
-                if not row:
-                    messagebox.showerror("خطأ", "العميل غير موجود")
-                    return
-
-                customer_id = row[0]
-
-                c.execute("""
-                    SELECT amount_paid, total 
-                    FROM sales 
-                    WHERE id = ? AND customer_id = ?
-                """, (sale_id, customer_id,))
-
-                row = c.fetchone()
-                if not row:
-                    messagebox.showerror("خطأ", "هذا البيع لا يخص هذا العميل")
-                    return
-
-                amount_paid, total = row
-                
-                c.execute("""
-                    UPDATE customers SET current_debt = current_debt - ? WHERE name = ?
-                """, ((total - amount_paid), customer_name_input,))
-
-
-
-            c.execute("DELETE FROM sale_items WHERE sale_id=?", (sale_id,))
-            c.execute("DELETE FROM sales WHERE id=?", (sale_id,))
-
-
-            conn.commit()
-        finally:
-            conn.close()
-
-        # 4️⃣ Now the inventory is as if nothing was sold
-        messagebox.showinfo("نجاح", f"تم استرجاع البيع ID {sale_id}. يمكنك الآن تعديل وإعادة البيع.")
-       
-    confirmation_button = customtkinter.CTkButton(
-        right,
-        text="البيع تأكيد",
-        height=45,
-        command=confirm_sale
-    )
-
-    confirmation_button.pack(pady=15, padx=10, fill=X)
-
-    restore_button = customtkinter.CTkButton(
-        right,
-        text="المشتريات استرجاع",
-        height=45,
-        command=open_restore_dialog
-    )
-
-    restore_button.pack(pady=15, padx=10, fill=X)
-
-    tree.bind("<Return>", increase_quantity)
-    tree.bind("<Delete>", delete_selected_item)
-    name_entry.bind("<Return>", lambda e: search_and_add())
 
 def open_users_controll():
-    win = Toplevel()
-    win.title("المستخدمين")
-    win.geometry("1100x750") # Slightly wider for better breathing room
-    win.grid_columnconfigure(0, weight=2)
-    win.grid_columnconfigure(1, weight=1)
-
-    bg_color = ("#ffffff", "#121212") 
-    card_color = ("#f8f9fa", "#1e1e1e") 
-    text_color = ("#000000", "#ffffff")         
-    appearance = customtkinter.get_appearance_mode()
-
-    bg = bg_color[1] if appearance == "Dark" else bg_color[0]
-    card = card_color[1] if appearance == "Dark" else card_color[0]
-    text = text_color[1] if appearance == "Dark" else text_color[0]
-    user_id = None
-
-    win.configure(bg=bg)
-
-    style = ttk.Style()
-    style.theme_use("default")
-
-    style.configure(
-        "Treeview",
-        background=card,
-        foreground=text,
-        rowheight=35,
-        fieldbackground=card,
-        bordercolor="#333333",
-        font=("Arial", 18)
-    )
-
-    style.configure(
-        "Treeview.Heading",
-        background=bg,
-        foreground=text,
-        font=("Arial", 18, "bold")
-    )
-
-    style.map(
-        "Treeview",
-        background=[("selected", "#333333")],
-        foreground=[("selected", "#ffffff")]
-    )
-
-    def handel_add_user(event=None):
-        name = nameEntry.get().strip()
-        password = passwordEntry.get().strip()
-        role = roleEntry.get().strip()
-
-        if not name or not password or not role:
-            messagebox.showerror("معلومات ناقصة", "رجاء قم بادخال جميع البيانات المطلوبة")
-            return
-        new_user = add_user(name, password, role)
-        if new_user:
-            messagebox.showinfo("نجاح", "تم انشاء مستخدم جديد!")
-        else:
-            messagebox.showerror("خطا", "لقد حدث خطا بالنظام رجاءا قم بالمحاولة في وقت لاحق")
-
-        load_all_users()
-
-    def searchUser(event=None): 
-        name = nameEntry.get().strip()
-
-       
-        if not name:
-            # again to do handle loading users
-            load_all_users()
-            return
-
-        # to do handle searching for user
-        products = search_user(name)
-        load_results(products)
-
-
-    def deleteUser():
-        nonlocal user_id
-        if not user_id:
-            messagebox.showwarning("تنبيه", "من فضلك اختر منتج أولاً")
-            return
-
-        confirm = messagebox.askyesno(
-            "تأكيد الحذف",
-            "هل أنت متأكد من حذف هذا المنتج نهائيًا؟\nسيتم تسجيل العملية في سجل المخزون."
-        )
-
-        if not confirm:
-            return
-
-        try:
-            # again to do handle deleting user
-            deleteUserResponse = delete_user(user_id)
-            if deleteUserResponse:
-                messagebox.showinfo("تم", "تم حذف المنتج بنجاح")
-            else:
-                messagebox.showerror("خطا", "لقد حدث خطا ما بالرجاء محاولة في وقت لاحق")
-            # refresh UI # again to do load all users
-
-            # clear fields
-            nameEntry.delete(0, END)
-            passwordEntry.delete(0, END)
-            roleEntry.delete(0, END)
-
-
-        except Exception as e:
-            messagebox.showerror("خطأ", str(e))
-
-        
-
-
-
-    main_container = customtkinter.CTkFrame(win, fg_color="transparent")
-    main_container.pack(fill=BOTH, expand=True, padx=20, pady=20)
-
-
-    leftFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, corner_radius=15)
-    leftFrame.pack(side=LEFT, fill=BOTH, expand=TRUE, padx=(0, 10))
-
-
-    
-    def on_select(event):
-        nonlocal user_id
-
-        selected = tree.focus()
-        if not selected:
-            return
-
-        values = tree.item(selected, "values")
-
-        user_id = values[0]
-
-        nameEntry.delete(0, END)
-        nameEntry.insert(0, values[1])
-
-        passwordEntry.delete(0, END)
-        passwordEntry.insert(0, values[2])
-
-        roleEntry.delete(0, END)
-        roleEntry.insert(0, values[3])
-        
-
-
-    def load_results(products):
-        tree.delete(*tree.get_children())
-        for p in products:
-            tree.insert("", END, values=p)
-    # to do handle loading all users
-    def load_all_users():
-        users_from_database = get_all_users()
-        load_results(users_from_database)
-
-
-    columns = ("id", "name", "password", "role")
-
-    tree = ttk.Treeview(leftFrame, columns=columns, show="headings")
-
-    tree.heading("id", text="ID")
-    tree.heading("name", text="الاسم")
-    tree.heading("password", text="كلمة المرور")
-    tree.heading("role", text="الوظيفة")
-
-
-    tree.column("id", width=50, anchor=CENTER)
-    tree.column("name", width=150 , anchor=CENTER)
-    tree.column("password", width=120 , anchor=CENTER)
-    tree.column("role", width=120 , anchor=CENTER)
-
-
-    tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
-    tree.bind("<<TreeviewSelect>>", on_select)
-
-    # to do handle loading all users
-    load_all_users()
-
-    rightFrame = customtkinter.CTkFrame(main_container, fg_color=card_color, width=350, corner_radius=15)
-    rightFrame.pack(side=RIGHT, fill=Y, padx=(10, 0))
-
-    def update_product():
-        global username
-        if not user_id:
-            messagebox.showwarning("Error", "No user selected")
-            return
-        name = nameEntry.get().strip()
-        password = passwordEntry.get().strip()
-        role = roleEntry.get().strip()
-        # to do
-        # handle updating users info
-        update_user_info = update_user(name, password, role, user_id)
-        messagebox.showinfo("Success", "User updated")
-   
-
-
-    def on_name_enter(event):
-        name = nameEntry.get().strip()
-        if name:
-            user = search_user(name)  # empty barcode
-            load_results(user)
-    
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" الوقت ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=0, column=1,sticky="ew" ,padx=5, pady=5)
-    dateEntry = customtkinter.CTkEntry(
-        rightFrame,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    dateEntry.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-
-
-    dateEntry.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text="اسم المستخدم",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=1, column=1,sticky="ew" ,padx=5, pady=5)
-    nameEntry = customtkinter.CTkEntry(
-        rightFrame,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    nameEntry.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
-
-
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" كلمة المرور ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=2, column=1,sticky="ew" ,padx=5, pady=5)
-    passwordEntry = customtkinter.CTkEntry(
-        rightFrame,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    passwordEntry.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
-    
-    
-    customtkinter.CTkLabel(
-        rightFrame,
-        text=" الوظيفة ",
-        width=150,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        text_color=text_color,
-        corner_radius=8,
-        font=("Arial", 20)
-    ).grid(row=3, column=1,sticky="ew" ,padx=5, pady=5)
-    roleEntry = customtkinter.CTkEntry(
-        rightFrame,
-        font=("Arial", 22),
-        width=250,
-        height=50,
-        fg_color=("#ffffff", "#2b2b2b"),
-        border_color=("#000000", "#ffffff"),
-        justify=CENTER
-    )
-    roleEntry.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
-
-
-
-    buttons_frame = customtkinter.CTkFrame(rightFrame)
-    buttons_frame.grid(
-        row=4,
-        column=0,
-        columnspan=2,
-        sticky="ew",
-        pady=15
-    )
-
-    buttons_frame.grid_columnconfigure(0, weight=1)
-
-
-    customtkinter.CTkButton(
-        buttons_frame,
-        text="مستخدم اضافة", 
-        fg_color=("#000000", "#ffffff"), 
-        text_color=("#ffffff", "#000000"), 
-        hover_color="#333333",
-        height=50,
-        command=handel_add_user
-    ).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-
-    customtkinter.CTkButton(
-        buttons_frame,
-        text="التعديلات حفظ", 
-        fg_color=("#000000", "#ffffff"), 
-        text_color=("#ffffff", "#000000"), 
-        hover_color="#333333",
-        height=50,
-        command=update_product
-    ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
-
-    customtkinter.CTkButton(
-        buttons_frame,
-        text=" مسح ",
-        height=50,
-        fg_color=("#000000", "#ffffff"), 
-        text_color=("#ffffff", "#000000"),
-        hover_color="#333333",
-        command=deleteUser
-    ).grid(row=2, column=0, padx=5, pady=5, sticky="ew")
-
-    
-
-
-    nameEntry.bind("<Return>", on_name_enter)
-    nameEntry.bind("<KeyRelease>", lambda event: searchUser())
-
-
+    return open_resource_window("users")
 
 
 def open_admin(root):
-    # This now updates specific labels instead of a Listbox
-
-    appearance = customtkinter.get_appearance_mode()
-    theme = {
-        "Dark": {
-            "bg": "#121212",
-            "card": "#1e1e1e",
-            "text": "#ffffff",
-            "subtext": "#cccccc",
-            "button_fg": "#1f3b4d",
-            "button_hover": "#2c526a",
-            "success": "#27ae60",
-            "danger": "#e74c3c",
-            "bottom_bg": "#1e1e1e",
-        },
-        "Light": {
-            "bg": "#f4f6f8",
-            "card": "#ffffff",
-            "text": "#000000",
-            "subtext": "#555555",
-            "button_fg": "#1f3b4d",
-            "button_hover": "#2c526a",
-            "success": "#27ae60",
-            "danger": "#e74c3c",
-            "bottom_bg": "#ffffff",
-        }
-    }
-
-    colors = theme[appearance]
-
+    """Build the dashboard in the supplied Tk/CustomTkinter root."""
+    global _root, _dashboard_refresh
+    _root = root
+    colors = _appearance_colors()
     for widget in root.winfo_children():
         widget.destroy()
+    try:
+        root.configure(fg_color=colors["bg"])
+    except Exception:
+        try: root.configure(bg=colors["bg"])
+        except Exception: pass
 
-    def update_information():
-        try:
-            products = get_number_of_products()
-            total_qty = get_total_quantity()
+    shell = ctk.CTkFrame(root, fg_color=colors["bg"], corner_radius=0)
+    shell.pack(fill="both", expand=True)
 
-            # Handle if num_products is a list or an integer
-            count = len(products) if isinstance(products, list) else products
-            
-            prod_count_label.configure(text=str(count))
-            total_qty_label.configure(text=str(total_qty))
-        except Exception as e:
-            print(f"Error updating stats: {e}")
-
-    global username
-    # Main container with a clean, light background
-    admin = customtkinter.CTkFrame(root, bg_color=colors['bg'], corner_radius=0)
-    admin.pack(fill=BOTH, expand=True)
-
-    # --- Header ---
-    header = customtkinter.CTkFrame(admin, height=80, fg_color=colors["button_fg"], corner_radius=0)
+    header = ctk.CTkFrame(shell, fg_color=colors["accent"], corner_radius=0, height=76)
     header.pack(fill="x")
     header.pack_propagate(False)
+    ctk.CTkLabel(header, text="لوحة تحكم MyShop ERP", font=("Segoe UI", 26, "bold"), text_color="#ffffff").pack(side="right", padx=24, pady=18)
+    ctk.CTkLabel(header, text=f"المستخدم: {username or 'غير معروف'}", font=("Segoe UI", 14), text_color="#ffffff").pack(side="left", padx=24)
 
-    header.grid_columnconfigure(0, weight=1)
-    header.grid_columnconfigure(1, weight=3)
-    header.grid_columnconfigure(2, weight=1)
+    body = ctk.CTkFrame(shell, fg_color="transparent")
+    body.pack(fill="both", expand=True, padx=18, pady=16)
+    nav = ctk.CTkScrollableFrame(body, width=300, fg_color=colors["card"], corner_radius=12)
+    nav.pack(side="right", fill="y", padx=(12, 0))
+    content = ctk.CTkScrollableFrame(body, fg_color="transparent", corner_radius=12)
+    content.pack(side="left", fill="both", expand=True)
 
-    customtkinter.CTkLabel(
-        header,
-        text="لوحة التحكم",
-        font=("Segoe UI", 32, "bold"),
-        text_color=colors["text"]
-    ).grid(row=0, column=1)
+    ctk.CTkLabel(nav, text="الوحدات", font=("Segoe UI", 20, "bold"), text_color=colors["text"]).pack(fill="x", padx=12, pady=(12, 6))
+    for group, resources in ADMIN_GROUPS:
+        ctk.CTkLabel(nav, text=group, font=("Segoe UI", 13, "bold"), text_color=colors["subtext"], anchor="e").pack(fill="x", padx=12, pady=(12, 4))
+        for label, resource in resources:
+            ctk.CTkButton(nav, text=label, anchor="e", height=34, fg_color="transparent", text_color=colors["text"],
+                          hover_color=colors["border"], command=lambda r=resource: open_resource_window(r)).pack(fill="x", padx=8, pady=2)
 
-    customtkinter.CTkLabel(
-        header,
-        text=f"👤 {username}",
-        font=("Segoe UI", 20),
-         text_color=colors["text"]
-    ).grid(row=0, column=2, sticky="e", padx=20)
+    ctk.CTkLabel(content, text="نظرة عامة", font=("Segoe UI", 25, "bold"), text_color=colors["text"]).pack(anchor="e", padx=6, pady=(2, 10))
+    ctk.CTkLabel(content, text="اختر وحدة من القائمة للوصول إلى جداول النظام وإجراءاته. القيود والمخزون المرحل لا يُعدلان من جداول العرض مباشرة.",
+                  font=("Segoe UI", 13), text_color=colors["subtext"], wraplength=900, justify="right").pack(anchor="e", fill="x", padx=6, pady=(0, 14))
 
-
-    # Main content area
-    content = customtkinter.CTkFrame(admin, fg_color="transparent")
-    content.pack(fill=BOTH, expand=True, padx=25, pady=25)
-
-    # --- Left Sidebar (Statistics Cards) ---
-    left = customtkinter.CTkFrame(content, fg_color="transparent", width=260)
-    left.pack(side=LEFT, fill=Y, padx=(0, 20))
-
-    customtkinter.CTkLabel(
-        left, text="إحصائيات المخزن",
-        font=("Arial", 26, "bold"), 
-        text_color=colors["text"]
-    ).pack(pady=(0, 15), anchor="c")
-
-    # Card 1: Product Count
-    card1 = customtkinter.CTkFrame(left, fg_color=colors["card"], corner_radius=15, height=110)
-    card1.pack(fill=X, pady=10)
-    card1.pack_propagate(False)
-    customtkinter.CTkLabel(card1, text="عدد الأصناف", font=("Arial", 18), text_color=colors["subtext"]).pack(pady=(15, 0))
-    prod_count_label = customtkinter.CTkLabel(card1, text="0", font=("Arial", 30, "bold"), text_color=colors["button_fg"])
-    prod_count_label.pack()
-
-    # Card 2: Total Quantities
-    card2 = customtkinter.CTkFrame(left, fg_color=colors["card"], corner_radius=15, height=110)
-    card2.pack(fill=X, pady=10)
-    card2.pack_propagate(False)
-    customtkinter.CTkLabel(card2, text="إجمالي الكميات", font=("Arial", 18), text_color=colors["subtext"]).pack(pady=(15, 0))
-    total_qty_label = customtkinter.CTkLabel(card2, text="0", font=("Arial", 30, "bold"), text_color=colors["success"])
-    total_qty_label.pack()
-
-    customtkinter.CTkButton(
-        left, text="تحديث البيانات", 
-        command=update_information, 
-        fg_color=colors["button_fg"],
-        hover_color=colors["button_hover"],
-        height=45, 
-        font=("Arial", 24, "bold")
-    ).pack(fill=X, pady=20)
-
-    # --- Right Panel (Navigation Grid) ---
-    right = customtkinter.CTkFrame(content, fg_color="transparent")
-    right.pack(side=RIGHT, fill=BOTH, expand=True)
-
-    for i in range(3): right.grid_columnconfigure(i, weight=1)
-    for i in range(2): right.grid_rowconfigure(i, weight=1)
-
-    BASE_DIR = os.path.dirname(__file__)
-    ASSETS_DIR = os.path.join(BASE_DIR, "assets")
-
-
-    add_image = customtkinter.CTkImage(
-        Image.open(os.path.join(ASSETS_DIR, "add.png")),
-        size=(50, 50)
-    )
-    search_image = customtkinter.CTkImage(
-        Image.open( os.path.join(ASSETS_DIR, "search.png")),
-        size=(50, 50)
-    )
-    statistics_image = customtkinter.CTkImage(
-        Image.open(os.path.join(ASSETS_DIR, "statistics.png") ),
-        size=(50, 50)
-    )
-    storage_image = customtkinter.CTkImage(
-        Image.open( os.path.join(ASSETS_DIR, "storage.png")),
-        size=(50, 50)
-    )
-    users_image = customtkinter.CTkImage(
-        Image.open(os.path.join(ASSETS_DIR, "users.png")),
-        size=(50, 50)
-    )
-
-    admin_sells_image = customtkinter.CTkImage(
-        Image.open(os.path.join(ASSETS_DIR, "money.png")),
-        size=(50, 50)
-    )
-
-    buttons = [
-        ("إضافة صنف", open_add_product, add_image),
-        ("إضافة للمخزن", open_add_to_storage, storage_image),
-        ("بحث وتعديل", open_search_update_page, search_image),
-        ("مبيعات", open_sells_admin, admin_sells_image),
-        ("المستخدمين", open_users_controll, users_image), # USERS
-        ("التقارير", open_statistics_page, statistics_image),
+    cards_frame = ctk.CTkFrame(content, fg_color="transparent")
+    cards_frame.pack(fill="x", expand=False)
+    for col in range(3): cards_frame.grid_columnconfigure(col, weight=1)
+    stats_config = [
+        ("products", "المنتجات النشطة", "products"), ("stock_units", "إجمالي وحدات المخزون", "stock_levels"),
+        ("low_stock", "أصناف منخفضة المخزون", "low_stock_products"), ("customers", "العملاء", "partners"),
+        ("suppliers", "الموردون", "partners"), ("sales_today", "مبيعات اليوم (وحدة صغرى)", "sales"),
+        ("receivables", "صافي أرصدة العملاء", "customer_balances"), ("payables", "صافي أرصدة الموردين", "supplier_balances"),
+        ("employees", "الموظفون النشطون", "employees"), ("unbalanced", "قيود تحتاج مراجعة", "unbalanced_entries"),
     ]
+    stat_labels = {}
+    for i, (key, label, resource) in enumerate(stats_config):
+        card = ctk.CTkFrame(cards_frame, fg_color=colors["card"], corner_radius=12, border_width=1, border_color=colors["border"])
+        card.grid(row=i // 3, column=i % 3, sticky="nsew", padx=6, pady=6)
+        ctk.CTkLabel(card, text=label, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=190).pack(padx=12, pady=(14, 4))
+        value = ctk.CTkLabel(card, text="—", font=("Segoe UI", 23, "bold"), text_color=colors["text"])
+        value.pack(padx=12, pady=(0, 6))
+        ctk.CTkButton(card, text="فتح", height=28, fg_color=colors["accent"], command=lambda r=resource: open_resource_window(r)).pack(padx=12, pady=(0, 12))
+        stat_labels[key] = value
 
-    row = col = 0
-    for text, cmd, image in buttons:
-        btn = customtkinter.CTkButton(
-            right, text=text, font=("Arial", 26, "bold"),
-            command=cmd, fg_color=colors["button_fg"], hover_color=colors["button_hover"],
-            corner_radius=15,
-            image=image,
-            compound=BOTTOM
-        )
-        btn.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
-        col += 1
-        if col == 3:
-            col = 0
-            row += 1
+    quick = ctk.CTkFrame(content, fg_color=colors["card"], corner_radius=12)
+    quick.pack(fill="x", padx=6, pady=(14, 6))
+    ctk.CTkLabel(quick, text="إجراءات سريعة", font=("Segoe UI", 18, "bold"), text_color=colors["text"]).pack(anchor="e", padx=14, pady=(12, 8))
+    quick_buttons = [
+        ("تسوية مخزون", lambda: _open_stock_adjustment(_refresh_dashboard)),
+        ("تسجيل بيع", lambda: _open_sale_form(lambda: None)),
+        ("فاتورة شراء", lambda: _open_purchase_invoice_form(lambda: None)),
+        ("تسجيل دفعة", lambda: _open_payment_form(lambda: None)),
+        ("تسجيل مصروف", lambda: _open_expense_form(lambda: None)),
+        ("قيد يومية", lambda: _open_journal_form(lambda: None)),
+    ]
+    quick_row = ctk.CTkFrame(quick, fg_color="transparent")
+    quick_row.pack(fill="x", padx=8, pady=(0, 12))
+    for label, command in quick_buttons:
+        ctk.CTkButton(quick_row, text=label, command=command, height=36, fg_color=colors["accent"]).pack(side="right", expand=True, fill="x", padx=4)
 
-    # --- Bottom Bar ---
-    bottom_frame = customtkinter.CTkFrame(admin, fg_color=colors["bottom_bg"], height=60, corner_radius=0)
-    bottom_frame.pack(side=BOTTOM, fill=X)
-    bottom_frame.pack_propagate(False)
+    footer = ctk.CTkFrame(shell, fg_color=colors["card"], height=54, corner_radius=0)
+    footer.pack(fill="x", side="bottom")
+    footer.pack_propagate(False)
+    ctk.CTkButton(footer, text="خروج", width=100, fg_color=colors["danger"], command=root.destroy).pack(side="left", padx=12, pady=8)
+    ctk.CTkButton(footer, text="تبديل المستخدم", width=140, fg_color="#6b7280", command=lambda: [shell.destroy(), go_login(root)]).pack(side="left", padx=6, pady=8)
+    ctk.CTkLabel(footer, text="MyShop ERP — SQLite/SQLCipher", text_color=colors["subtext"]).pack(side="right", padx=18)
 
-    customtkinter.CTkButton(
-        bottom_frame, text="X خروج", command=root.destroy,
-        fg_color=colors["danger"], hover_color="#c0392b", text_color="white",
-        width=120, height=35, font=("Arial", 24, "bold")
-    ).pack(side=LEFT, padx=15, pady=10)
-
-    customtkinter.CTkButton(
-        bottom_frame, text="تبديل المستخدم",
-        command=lambda: [admin.destroy(), go_login(root)],
-        fg_color="#95a5a6", hover_color="#7f8c8d", text_color="white",
-        width=120, height=35, font=("Arial", 24, "bold")
-    ).pack(side=LEFT, padx=10, pady=10)
-
-    customtkinter.CTkLabel(
-        bottom_frame, text=f" {username} :أهلاً بك", 
-        font=("Arial", 24, "bold"), text_color=colors["text"]
-    ).pack(side=RIGHT, padx=25, pady=10)
-
-    # Initial load
-    update_information()
+    def refresh_dashboard():
+        try:
+            stats = svc.get_dashboard_stats()
+            for key, label in stat_labels.items():
+                value = stats.get(key, 0)
+                label.configure(text=f"{value:,}" if isinstance(value, (int, float)) else str(value))
+        except Exception as exc:
+            messagebox.showerror("تعذر تحميل الملخص", str(exc), parent=root)
+    _dashboard_refresh = refresh_dashboard
+    refresh_dashboard()
+    return shell
