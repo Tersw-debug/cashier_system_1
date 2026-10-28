@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import customtkinter as ctk
+from UI.rtl import fix
 
 from Services.cashier_service import (
     close_cashier_shift,
@@ -214,7 +215,7 @@ def build_sell_ui(parent, username):
         toolbar, textvariable=shift_text_var, text_color=muted
     )
     shift_status_label.pack(side=LEFT, padx=8)
-    shift_button = ctk.CTkButton(toolbar, text="بدء الوردية", width=120)
+    shift_button = ctk.CTkButton(toolbar, text=fix("الوردية بدء"), width=120)
     shift_button.pack(side=LEFT, padx=10, pady=8)
 
     content = ctk.CTkFrame(main, fg_color="transparent")
@@ -306,19 +307,19 @@ def build_sell_ui(parent, username):
     cart_actions.pack(fill=X, padx=10, pady=(0, 10))
     ctk.CTkButton(
         cart_actions,
-        text="زيادة الكمية +",
+        text=fix("زيادة الكمية +"),
         command=lambda: change_selected_qty(1),
         width=115,
     ).pack(side=RIGHT, padx=3)
     ctk.CTkButton(
         cart_actions,
-        text="تقليل الكمية −",
+        text=fix("تقليل الكمية −"),
         command=lambda: change_selected_qty(-1),
         width=115,
     ).pack(side=RIGHT, padx=3)
     ctk.CTkButton(
         cart_actions,
-        text="حذف الصنف",
+        text=fix("حذف الصنف"),
         command=lambda: remove_selected(),
         width=95,
         fg_color="#a93226",
@@ -326,7 +327,7 @@ def build_sell_ui(parent, username):
     ).pack(side=LEFT, padx=3)
     ctk.CTkButton(
         cart_actions,
-        text="تفريغ السلة",
+        text=fix("تفريغ السلة"),
         command=lambda: clear_cart(),
         width=95,
         fg_color="#555555",
@@ -1128,7 +1129,7 @@ def build_sell_ui(parent, username):
     ).pack(fill=X, padx=12, pady=(10, 6))
     ctk.CTkButton(
         controls_body,
-        text="مرتجع بيع",
+        text=fix("مرتجع بيع"),
         command=open_return_dialog,
         height=38,
         fg_color="#a93226",
@@ -1136,7 +1137,7 @@ def build_sell_ui(parent, username):
     ).pack(fill=X, padx=12, pady=5)
     ctk.CTkButton(
         controls_body,
-        text="تحديث الأصناف والعملاء",
+        text=fix("تحديث الأصناف والعملاء"),
         command=lambda: (build_quick_access(), refresh_customers()),
         height=36,
         fg_color="#555555",
@@ -1144,7 +1145,7 @@ def build_sell_ui(parent, username):
     ).pack(fill=X, padx=12, pady=5)
     ctk.CTkButton(
         controls_body,
-        text="فتح مجلد تقارير الوردية",
+        text=fix("فتح مجلد تقارير الوردية"),
         command=open_session_reports,
         height=36,
         fg_color="#285c8f",
@@ -1152,7 +1153,7 @@ def build_sell_ui(parent, username):
     ).pack(fill=X, padx=12, pady=5)
     ctk.CTkLabel(
         controls_body,
-        text="اختصارات: Enter لإضافة البحث، Delete لحذف الصنف، والنقر المزدوج لزيادة الكمية.",
+        text=fix("اختصارات: Enter لإضافة البحث، Delete لحذف الصنف، والنقر المزدوج لزيادة الكمية."),
         text_color=muted,
         font=("Arial", 10),
         wraplength=265,

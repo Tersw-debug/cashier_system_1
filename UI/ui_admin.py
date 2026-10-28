@@ -12,7 +12,7 @@ import customtkinter as ctk
 
 from Services import admin_service as svc
 from UI.router import go_login
-
+from UI.rtl import fix
 
 username = ""
 _root = None
@@ -822,7 +822,7 @@ def open_admin(root):
     for group, resources in ADMIN_GROUPS:
         ctk.CTkLabel(nav, text=group, font=("Segoe UI", 13, "bold"), text_color=colors["subtext"], anchor="e").pack(fill="x", padx=12, pady=(12, 4))
         for label, resource in resources:
-            ctk.CTkButton(nav, text=label, anchor="e", height=34, fg_color="transparent", text_color=colors["text"],
+            ctk.CTkButton(nav, text=fix(label), anchor="e", height=34, fg_color="transparent", text_color=colors["text"],
                           hover_color=colors["border"], command=lambda r=resource: open_resource_window(r)).pack(fill="x", padx=8, pady=2)
 
     ctk.CTkLabel(content, text="نظرة عامة", font=("Segoe UI", 25, "bold"), text_color=colors["text"]).pack(anchor="e", padx=6, pady=(2, 10))
@@ -864,7 +864,7 @@ def open_admin(root):
     quick_row = ctk.CTkFrame(quick, fg_color="transparent")
     quick_row.pack(fill="x", padx=8, pady=(0, 12))
     for label, command in quick_buttons:
-        ctk.CTkButton(quick_row, text=label, command=command, height=36, fg_color=colors["accent"]).pack(side="right", expand=True, fill="x", padx=4)
+        ctk.CTkButton(quick_row, text=fix(label), command=command, height=36, fg_color=colors["accent"]).pack(side="right", expand=True, fill="x", padx=4)
 
     footer = ctk.CTkFrame(shell, fg_color=colors["card"], height=54, corner_radius=0)
     footer.pack(fill="x", side="bottom")
