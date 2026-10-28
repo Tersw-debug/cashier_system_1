@@ -1,7 +1,6 @@
 """Admin data-access and business operations for the MyShop ERP schema.
 
-This module targets Database.Schema.db (the encrypted SQLCipher Database wrapper),
-not the legacy Database.get_connection() API.
+This module targets the project MySQL database layer in Database.Schema.
 """
 from __future__ import annotations
 
@@ -11,7 +10,7 @@ import re
 import os
 from datetime import date, datetime
 from typing import Any
-from .security import PasswordHasher
+from Services.security import PasswordHasher
 
 from Database.Schema import db
 
@@ -25,7 +24,7 @@ RESOURCE_CONFIG: dict[str, dict[str, Any]] = {
         "title": "المنتجات", "editable": True,
         "sql": """SELECT p.id, COALESCE(p.sku,''), p.name,
                   COALESCE(s.name,''), COALESCE(u.symbol,u.name,''),
-                  COALESCE((SELECT GROUP_CONCAT(pb.barcode, ', ') FROM product_barcodes pb WHERE pb.product_id=p.id),''),
+                  COALESCE((SELECT GROUP_CONCAT(pb.barcode SEPARATOR ', ') FROM product_barcodes pb WHERE pb.product_id=p.id),''),
                   p.cost_price, p.sell_price,
                   COALESCE((SELECT SUM(sl.quantity) FROM stock_levels sl WHERE sl.product_id=p.id),0),
                   p.min_quantity, p.track_stock, p.is_active,  COALESCE(p.color,'') ,COALESCE(t.name,'')
@@ -44,7 +43,7 @@ RESOURCE_CONFIG: dict[str, dict[str, Any]] = {
         "sql": "SELECT pb.id,pb.product_id,p.name,pb.barcode,pb.is_primary FROM product_barcodes pb JOIN products p ON p.id=pb.product_id",
         "columns": ["ID", "معرف المنتج", "المنتج", "الباركود", "أساسي"], "search": ["p.name", "pb.barcode"]},
     "tax_rates": {"title": "الضرائب", "editable": True,
-        "sql": "SELECT id,name,rate_bp,printf('%.2f%%',rate_bp/100.0),is_active FROM tax_rates",
+        "sql": "SELECT id,name,rate_bp,CONCAT(FORMAT(rate_bp/100.0, 2), '%'),is_active FROM tax_rates",
         "columns": ["ID", "الاسم", "النقاط الأساسية", "النسبة", "نشط"], "search": ["name"]},
     "partners": {"title": "العملاء والموردون", "editable": True,
         "sql": "SELECT id,name,COALESCE(phone,''),COALESCE(email,''),is_customer,is_supplier,credit_limit,is_active FROM partners",
@@ -93,7 +92,7 @@ RESOURCE_CONFIG: dict[str, dict[str, Any]] = {
         "sql": "SELECT si.id,s.number,si.product_name,si.quantity,si.unit_price,si.unit_cost,si.line_discount,si.tax_amount,si.line_total FROM sale_items si JOIN sales s ON s.id=si.sale_id",
         "columns": ["ID", "رقم البيع", "المنتج", "الكمية", "سعر الوحدة", "التكلفة", "الخصم", "الضريبة", "الإجمالي"], "search": ["s.number", "si.product_name"]},
     "payment_methods": {"title": "طرق الدفع", "editable": True,
-        "sql": "SELECT pm.id,pm.name,pm.kind,pm.is_active,COALESCE(a.code || ' - ' || a.name,'') FROM payment_methods pm LEFT JOIN accounts a ON a.id=pm.account_id",
+        "sql": "SELECT pm.id,pm.name,pm.kind,pm.is_active,COALESCE(CONCAT(a.code, ' - ', a.name),'') FROM payment_methods pm LEFT JOIN accounts a ON a.id=pm.account_id",
         "columns": ["ID", "الاسم", "النوع", "نشط", "حساب الأستاذ"], "search": ["pm.name", "pm.kind"]},
     "cash_shifts": {"title": "ورديات الخزينة", "editable": False,
         "sql": "SELECT cs.id,u.username,cs.opened_at,COALESCE(cs.closed_at,''),cs.opening_cash,COALESCE(cs.closing_cash,''),COALESCE(cs.expected_cash,''),cs.status,COALESCE(cs.note,'') FROM cash_shifts cs JOIN users u ON u.id=cs.user_id",
@@ -151,7 +150,7 @@ RESOURCE_CONFIG: dict[str, dict[str, Any]] = {
     "doc_sequences": {"title": "ترقيم المستندات", "editable": True,
         "sql": "SELECT name,prefix,next_number,padding FROM doc_sequences", "columns": ["الاسم", "البادئة", "الرقم التالي", "عدد الخانات"], "search": ["name", "prefix"]},
     "settings": {"title": "الإعدادات", "editable": True,
-        "sql": "SELECT key,value,updated_at FROM settings", "columns": ["المفتاح", "القيمة", "آخر تحديث"], "search": ["key", "value"]},
+        "sql": "SELECT `key`,value,updated_at FROM settings", "columns": ["المفتاح", "القيمة", "آخر تحديث"], "search": ["key", "value"]},
 }
 
 
@@ -202,7 +201,7 @@ def _next_number(c, sequence_name: str) -> str:
 
 
 def _setting(c, key: str, default=None):
-    row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    row = c.execute("SELECT value FROM settings WHERE `key`=?", (key,)).fetchone()
     return row[0] if row else default
 
 
@@ -224,7 +223,7 @@ def _snapshot(c, resource: str, record_id):
     if resource not in RESOURCE_CONFIG:
         return None
     if resource == "settings":
-        row = c.execute("SELECT key,value FROM settings WHERE key=?", (str(record_id),)).fetchone()
+        row = c.execute("SELECT `key`,value FROM settings WHERE `key`=?", (str(record_id),)).fetchone()
         return {"key": row[0], "value": row[1]} if row else None
     pk = "name" if resource == "doc_sequences" else "id"
     cur = c.execute(f"SELECT * FROM {resource} WHERE {pk}=?", (record_id,))
@@ -249,7 +248,7 @@ def _configured_account_id(c, key: str) -> int:
 
 
 def get_username_id(username: str) -> int | None:
-    row = _fetch_one("SELECT id FROM users WHERE username=? COLLATE NOCASE", (username,))
+    row = _fetch_one("SELECT id FROM users WHERE LOWER(username)=LOWER(?)", (username,))
     return int(row[0]) if row else None
 
 
@@ -287,7 +286,7 @@ def list_resource(resource: str, search: str = ""):
 
 def get_resource_record(resource: str, record_id: int):
     if resource == "settings":
-        row = _fetch_one("SELECT key,value FROM settings WHERE key=?", (str(record_id),))
+        row = _fetch_one("SELECT `key`,value FROM settings WHERE `key`=?", (str(record_id),))
         if not row:
             return None
         return {"key": row[0], "value": row[1]}
@@ -414,7 +413,7 @@ def save_entity(resource: str, values: dict[str, Any], record_id: int | str | No
 def _save_row(c, resource, cooked, record_id):
     if resource == "settings":
         key = cooked.get("key")
-        c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=datetime('now','localtime')", (key, cooked.get("value")))
+        c.execute("INSERT INTO settings(`key`,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value),updated_at=CURRENT_TIMESTAMP", (key, cooked.get("value")))
         return key
     if resource == "doc_sequences":
         name = cooked.get("name")
@@ -795,7 +794,7 @@ def close_cash_shift(shift_id: int, closing_cash: int, user_id: int | None = Non
         expenses = c.execute("SELECT COALESCE(SUM(e.amount),0) FROM expenses e JOIN payment_methods pm ON pm.id=e.method_id WHERE e.shift_id=? AND pm.kind='CASH'", (shift_id,)).fetchone()[0]
         direct_sales = c.execute("SELECT COALESCE(SUM(CASE sale_type WHEN 'SALE' THEN total ELSE -total END),0) FROM sales WHERE shift_id=? AND customer_id IS NULL AND status='POSTED'", (shift_id,)).fetchone()[0]
         expected = int(shift[0]) + int(inbound) - int(outbound) - int(expenses) + int(direct_sales)
-        c.execute("UPDATE cash_shifts SET closed_at=datetime('now','localtime'),closing_cash=?,expected_cash=?,status='CLOSED' WHERE id=?", (closing_cash, expected, shift_id))
+        c.execute("UPDATE cash_shifts SET closed_at=CURRENT_TIMESTAMP,closing_cash=?,expected_cash=?,status='CLOSED' WHERE id=?", (closing_cash, expected, shift_id))
         _audit(c, user_id, "CLOSE_SHIFT", "cash_shifts", shift_id,
                old_values={"status": "OPEN", "opening_cash": shift[0]}, new_values={"status": "CLOSED", "closing_cash": closing_cash, "expected_cash": expected})
         return expected
@@ -1070,7 +1069,7 @@ def get_field_choices(field_name: str):
     mapping = {
         "section_id": ("SELECT id,name FROM sections WHERE is_active=1 ORDER BY name",),
         "unit_id": ("SELECT id,name FROM units WHERE is_active=1 ORDER BY name",),
-        "tax_rate_id": ("SELECT id,name || ' (' || printf('%.2f%%',rate_bp/100.0) || ')' FROM tax_rates WHERE is_active=1 ORDER BY name",),
+        "tax_rate_id": ("SELECT id,CONCAT(name, ' (', FORMAT(rate_bp/100.0, 2), '%)') FROM tax_rates WHERE is_active=1 ORDER BY name",),
         "product_id": ("SELECT id,name FROM products WHERE is_active=1 ORDER BY name",),
         "warehouse_id": ("SELECT id,name FROM warehouses WHERE is_active=1 ORDER BY name",),
         "supplier_id": ("SELECT id,name FROM partners WHERE is_supplier=1 AND is_active=1 ORDER BY name",),
@@ -1079,12 +1078,12 @@ def get_field_choices(field_name: str):
         "original_invoice_id": ("SELECT id,number FROM purchase_invoices WHERE invoice_type='PURCHASE' AND status='POSTED' ORDER BY id DESC",),
         "partner_id": ("SELECT id,name FROM partners WHERE is_active=1 ORDER BY name",),
         "method_id": ("SELECT id,name FROM payment_methods WHERE is_active=1 ORDER BY name",),
-        "account_id": ("SELECT id,code || ' - ' || name FROM accounts WHERE is_active=1 ORDER BY code",),
+        "account_id": ("SELECT id,CONCAT(code, ' - ', name) FROM accounts WHERE is_active=1 ORDER BY code",),
         "department_id": ("SELECT id,name FROM departments WHERE is_active=1 ORDER BY name",),
         "employee_id": ("SELECT id,full_name FROM employees WHERE is_active=1 ORDER BY full_name",),
         "role_id": ("SELECT id,name FROM roles ORDER BY name",),
         "user_id": ("SELECT id,username FROM users WHERE is_active=1 ORDER BY username",),
-        "shift_id": ("SELECT cash_shifts.id,'#' || cash_shifts.id || ' - ' || users.username FROM cash_shifts JOIN users ON users.id=cash_shifts.user_id WHERE cash_shifts.status='OPEN' ORDER BY cash_shifts.id DESC",),
+        "shift_id": ("SELECT cash_shifts.id,CONCAT('#', cash_shifts.id, ' - ', users.username) FROM cash_shifts JOIN users ON users.id=cash_shifts.user_id WHERE cash_shifts.status='OPEN' ORDER BY cash_shifts.id DESC",),
     }
     if field_name not in mapping:
         return []

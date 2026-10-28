@@ -1,4 +1,4 @@
-from Database.migrations.helpers import TS, add_updated_at_trigger, add_permissions
+from Database.migrations.helpers import TS, TS_UPDATED, TABLE_OPTS, add_permissions
 
 VERSION = 4
 DESCRIPTION = "Sales, returns, payments, cash shifts, balance views"
@@ -7,100 +7,126 @@ DESCRIPTION = "Sales, returns, payments, cash shifts, balance views"
 def apply(c):
     statements = [
         f"""CREATE TABLE payment_methods (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            kind TEXT NOT NULL DEFAULT 'CASH'
-                CHECK (kind IN ('CASH','CARD','TRANSFER','WALLET','OTHER')),
-            is_active INTEGER NOT NULL DEFAULT 1,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL UNIQUE,
+            kind VARCHAR(20) NOT NULL DEFAULT 'CASH',
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at {TS},
-            updated_at {TS}
-        )""",
+            updated_at {TS_UPDATED},
+            CONSTRAINT chk_pm_kind CHECK (kind IN ('CASH','CARD','TRANSFER','WALLET','OTHER'))
+        ) {TABLE_OPTS}""",
 
         # ---------- cash drawer shifts ----------
+        # open_user_id = the user while the shift is OPEN, NULL once closed, so the unique
+        # key allows only one open shift per user (MySQL has no partial unique index).
+        # user_id must stay ON DELETE RESTRICT: MySQL refuses SET NULL / CASCADE on the
+        # base column of an indexed generated column.
         f"""CREATE TABLE cash_shifts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
             opened_at {TS},
-            closed_at TEXT,
-            opening_cash INTEGER NOT NULL DEFAULT 0,
-            closing_cash INTEGER,
-            expected_cash INTEGER,
-            status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','CLOSED')),
-            note TEXT
-        )""",
-        "CREATE UNIQUE INDEX uq_one_open_shift_per_user ON cash_shifts(user_id) WHERE status = 'OPEN'",
+            closed_at DATETIME NULL,
+            opening_cash BIGINT NOT NULL DEFAULT 0,
+            closing_cash BIGINT NULL,
+            expected_cash BIGINT NULL,
+            status VARCHAR(10) NOT NULL DEFAULT 'OPEN',
+            note TEXT,
+            open_user_id INT GENERATED ALWAYS AS (IF(status = 'OPEN', user_id, NULL)) VIRTUAL INVISIBLE,
+            UNIQUE KEY uq_one_open_shift_per_user (open_user_id),
+            CONSTRAINT chk_shift_status CHECK (status IN ('OPEN','CLOSED')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        ) {TABLE_OPTS}""",
 
         # ---------- sales and returns ----------
-        # total = subtotal + tax_total - discount (minor units)
+        # total = subtotal + tax_total - discount (minor units); customer_id NULL = walk-in
         # amount_paid is deliberately not stored; it is derived from payment_allocations.
         f"""CREATE TABLE sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            number TEXT NOT NULL UNIQUE,
-            sale_type TEXT NOT NULL DEFAULT 'SALE' CHECK (sale_type IN ('SALE','RETURN')),
-            original_sale_id INTEGER REFERENCES sales(id),
-            customer_id INTEGER REFERENCES partners(id),          -- NULL = walk-in
-            warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
-            cashier_id INTEGER NOT NULL REFERENCES users(id),
-            shift_id INTEGER REFERENCES cash_shifts(id),
-            status TEXT NOT NULL DEFAULT 'POSTED'
-                CHECK (status IN ('DRAFT','POSTED','CANCELLED')),
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            number VARCHAR(40) NOT NULL UNIQUE,
+            sale_type VARCHAR(10) NOT NULL DEFAULT 'SALE',
+            original_sale_id INT NULL,
+            customer_id INT NULL,
+            warehouse_id INT NOT NULL,
+            cashier_id INT NOT NULL,
+            shift_id INT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'POSTED',
             sold_at {TS},
-            subtotal INTEGER NOT NULL DEFAULT 0,
-            tax_total INTEGER NOT NULL DEFAULT 0,
-            discount INTEGER NOT NULL DEFAULT 0,
-            total INTEGER NOT NULL DEFAULT 0,
-            due_date TEXT,
+            subtotal BIGINT NOT NULL DEFAULT 0,
+            tax_total BIGINT NOT NULL DEFAULT 0,
+            discount BIGINT NOT NULL DEFAULT 0,
+            total BIGINT NOT NULL DEFAULT 0,
+            due_date DATE NULL,
             note TEXT,
             created_at {TS},
-            updated_at {TS}
-        )""",
+            updated_at {TS_UPDATED},
+            CONSTRAINT chk_sale_type CHECK (sale_type IN ('SALE','RETURN')),
+            CONSTRAINT chk_sale_status CHECK (status IN ('DRAFT','POSTED','CANCELLED')),
+            FOREIGN KEY (original_sale_id) REFERENCES sales(id),
+            FOREIGN KEY (customer_id) REFERENCES partners(id),
+            FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+            FOREIGN KEY (cashier_id) REFERENCES users(id),
+            FOREIGN KEY (shift_id) REFERENCES cash_shifts(id)
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_sales_customer ON sales(customer_id)",
         "CREATE INDEX idx_sales_sold_at ON sales(sold_at)",
         "CREATE INDEX idx_sales_shift ON sales(shift_id)",
+
         # line_total = quantity*unit_price - line_discount + tax_amount
         # unit_cost is a snapshot so profit reports survive later cost changes
-        """CREATE TABLE sale_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-            product_id INTEGER NOT NULL REFERENCES products(id),
-            product_name TEXT NOT NULL,
-            quantity REAL NOT NULL CHECK (quantity > 0),
-            unit_price INTEGER NOT NULL CHECK (unit_price >= 0),
-            unit_cost INTEGER NOT NULL DEFAULT 0,
-            line_discount INTEGER NOT NULL DEFAULT 0,
-            tax_rate_bp INTEGER NOT NULL DEFAULT 0,
-            tax_amount INTEGER NOT NULL DEFAULT 0,
-            line_total INTEGER NOT NULL
-        )""",
-        "CREATE INDEX idx_sale_items_sale ON sale_items(sale_id)",
+        f"""CREATE TABLE sale_items (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            sale_id INT NOT NULL,
+            product_id INT NOT NULL,
+            product_name VARCHAR(255) NOT NULL,
+            quantity DECIMAL(18,3) NOT NULL,
+            unit_price BIGINT NOT NULL,
+            unit_cost BIGINT NOT NULL DEFAULT 0,
+            line_discount BIGINT NOT NULL DEFAULT 0,
+            tax_rate_bp INT NOT NULL DEFAULT 0,
+            tax_amount BIGINT NOT NULL DEFAULT 0,
+            line_total BIGINT NOT NULL,
+            CONSTRAINT chk_si_qty CHECK (quantity > 0),
+            CONSTRAINT chk_si_price CHECK (unit_price >= 0),
+            FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_sale_items_product ON sale_items(product_id)",
 
         # ---------- payments (customers IN, suppliers OUT) ----------
         f"""CREATE TABLE payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            number TEXT NOT NULL UNIQUE,
-            direction TEXT NOT NULL CHECK (direction IN ('IN','OUT')),
-            partner_id INTEGER REFERENCES partners(id),
-            method_id INTEGER NOT NULL REFERENCES payment_methods(id),
-            shift_id INTEGER REFERENCES cash_shifts(id),
-            amount INTEGER NOT NULL CHECK (amount > 0),
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            number VARCHAR(40) NOT NULL UNIQUE,
+            direction VARCHAR(3) NOT NULL,
+            partner_id INT NULL,
+            method_id INT NOT NULL,
+            shift_id INT NULL,
+            amount BIGINT NOT NULL,
             paid_at {TS},
-            reference TEXT,
+            reference VARCHAR(100),
             note TEXT,
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at {TS}
-        )""",
+            user_id INT NULL,
+            created_at {TS},
+            CONSTRAINT chk_pay_direction CHECK (direction IN ('IN','OUT')),
+            CONSTRAINT chk_pay_amount CHECK (amount > 0),
+            FOREIGN KEY (partner_id) REFERENCES partners(id),
+            FOREIGN KEY (method_id) REFERENCES payment_methods(id),
+            FOREIGN KEY (shift_id) REFERENCES cash_shifts(id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_payments_partner ON payments(partner_id)",
+
         # a payment can be split across documents; the unallocated rest is "on account"
-        """CREATE TABLE payment_allocations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            payment_id INTEGER NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
-            document_type TEXT NOT NULL CHECK (document_type IN ('SALE','PURCHASE_INVOICE')),
-            document_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL CHECK (amount > 0)
-        )""",
+        f"""CREATE TABLE payment_allocations (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            payment_id INT NOT NULL,
+            document_type VARCHAR(20) NOT NULL,
+            document_id INT NOT NULL,
+            amount BIGINT NOT NULL,
+            CONSTRAINT chk_alloc_type CHECK (document_type IN ('SALE','PURCHASE_INVOICE')),
+            CONSTRAINT chk_alloc_amount CHECK (amount > 0),
+            FOREIGN KEY (payment_id) REFERENCES payments(id) ON DELETE CASCADE
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_alloc_doc ON payment_allocations(document_type, document_id)",
-        "CREATE INDEX idx_alloc_payment ON payment_allocations(payment_id)",
 
         # ---------- derived balances: allocation totals are calculated when queried ----------
         # Positive = the customer owes us.
@@ -171,9 +197,6 @@ def apply(c):
     ]
     for sql in statements:
         c.execute(sql)
-
-    for table in ("payment_methods", "sales"):
-        add_updated_at_trigger(c, table)
 
     c.executemany(
         "INSERT INTO payment_methods (name, kind) VALUES (?, ?)",

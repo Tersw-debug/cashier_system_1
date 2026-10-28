@@ -1,4 +1,4 @@
-from Database.migrations.helpers import TS, add_updated_at_trigger, add_permissions
+from Database.migrations.helpers import TS, TS_UPDATED, TABLE_OPTS, add_permissions
 
 VERSION = 6
 DESCRIPTION = "Employees, attendance, payroll"
@@ -7,84 +7,100 @@ DESCRIPTION = "Employees, attendance, payroll"
 def apply(c):
     statements = [
         f"""CREATE TABLE departments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            is_active INTEGER NOT NULL DEFAULT 1,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(150) NOT NULL UNIQUE,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at {TS},
-            updated_at {TS}
-        )""",
+            updated_at {TS_UPDATED}
+        ) {TABLE_OPTS}""",
+
+        # user_id = login account, optional
         f"""CREATE TABLE employees (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT UNIQUE,
-            full_name TEXT NOT NULL,
-            phone TEXT,
-            national_id TEXT,
-            job_title TEXT,
-            department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
-            hire_date TEXT,
-            termination_date TEXT,
-            salary_type TEXT NOT NULL DEFAULT 'MONTHLY'
-                CHECK (salary_type IN ('MONTHLY','DAILY','HOURLY')),
-            base_salary INTEGER NOT NULL DEFAULT 0 CHECK (base_salary >= 0),
-            user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE SET NULL,  -- login account, optional
-            is_active INTEGER NOT NULL DEFAULT 1,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(50) UNIQUE,
+            full_name VARCHAR(150) NOT NULL,
+            phone VARCHAR(40),
+            national_id VARCHAR(50),
+            job_title VARCHAR(100),
+            department_id INT NULL,
+            hire_date DATE NULL,
+            termination_date DATE NULL,
+            salary_type VARCHAR(10) NOT NULL DEFAULT 'MONTHLY',
+            base_salary BIGINT NOT NULL DEFAULT 0,
+            user_id INT NULL UNIQUE,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at {TS},
-            updated_at {TS}
-        )""",
-        """CREATE TABLE attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-            work_date TEXT NOT NULL,
-            check_in TEXT,
-            check_out TEXT,
-            status TEXT NOT NULL DEFAULT 'PRESENT'
-                CHECK (status IN ('PRESENT','ABSENT','LATE','LEAVE','HOLIDAY')),
+            updated_at {TS_UPDATED},
+            CONSTRAINT chk_emp_salary_type CHECK (salary_type IN ('MONTHLY','DAILY','HOURLY')),
+            CONSTRAINT chk_emp_salary CHECK (base_salary >= 0),
+            FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE SET NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
+
+        # check_in / check_out are full date-times: 'YYYY-MM-DD HH:MM:SS'
+        f"""CREATE TABLE attendance (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            employee_id INT NOT NULL,
+            work_date DATE NOT NULL,
+            check_in DATETIME NULL,
+            check_out DATETIME NULL,
+            status VARCHAR(10) NOT NULL DEFAULT 'PRESENT',
             note TEXT,
-            UNIQUE (employee_id, work_date)
-        )""",
-        f"""CREATE TABLE payroll_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            number TEXT NOT NULL UNIQUE,
-            period_start TEXT NOT NULL,
-            period_end TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','POSTED','PAID')),
-            journal_entry_id INTEGER REFERENCES journal_entries(id),
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at {TS},
-            updated_at {TS},
-            CHECK (period_end >= period_start)
-        )""",
-        """CREATE TABLE payslips (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id INTEGER NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
-            employee_id INTEGER NOT NULL REFERENCES employees(id),
-            base_salary INTEGER NOT NULL DEFAULT 0,
-            allowances INTEGER NOT NULL DEFAULT 0,
-            deductions INTEGER NOT NULL DEFAULT 0,
-            advances_deducted INTEGER NOT NULL DEFAULT 0,
-            net_pay INTEGER NOT NULL,
-            method_id INTEGER REFERENCES payment_methods(id),
-            paid_at TEXT,
-            UNIQUE (run_id, employee_id)
-        )""",
-        # allowances, bonuses, deductions and advances; payslip_id is set once applied
-        """CREATE TABLE employee_adjustments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-            kind TEXT NOT NULL CHECK (kind IN ('ALLOWANCE','BONUS','DEDUCTION','ADVANCE')),
-            amount INTEGER NOT NULL CHECK (amount > 0),
-            effective_date TEXT NOT NULL DEFAULT (date('now','localtime')),
-            note TEXT,
-            payslip_id INTEGER REFERENCES payslips(id) ON DELETE SET NULL
-        )""",
-        "CREATE INDEX idx_adjustments_employee ON employee_adjustments(employee_id)",
+            UNIQUE KEY uq_attendance_day (employee_id, work_date),
+            CONSTRAINT chk_att_status CHECK (status IN ('PRESENT','ABSENT','LATE','LEAVE','HOLIDAY')),
+            FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_attendance_date ON attendance(work_date)",
+
+        f"""CREATE TABLE payroll_runs (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            number VARCHAR(40) NOT NULL UNIQUE,
+            period_start DATE NOT NULL,
+            period_end DATE NOT NULL,
+            status VARCHAR(10) NOT NULL DEFAULT 'DRAFT',
+            journal_entry_id INT NULL,
+            created_by INT NULL,
+            created_at {TS},
+            updated_at {TS_UPDATED},
+            CONSTRAINT chk_pr_status CHECK (status IN ('DRAFT','POSTED','PAID')),
+            CONSTRAINT chk_pr_period CHECK (period_end >= period_start),
+            FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id),
+            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
+        f"""CREATE TABLE payslips (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            run_id INT NOT NULL,
+            employee_id INT NOT NULL,
+            base_salary BIGINT NOT NULL DEFAULT 0,
+            allowances BIGINT NOT NULL DEFAULT 0,
+            deductions BIGINT NOT NULL DEFAULT 0,
+            advances_deducted BIGINT NOT NULL DEFAULT 0,
+            net_pay BIGINT NOT NULL,
+            method_id INT NULL,
+            paid_at DATETIME NULL,
+            UNIQUE KEY uq_payslip_run_employee (run_id, employee_id),
+            FOREIGN KEY (run_id) REFERENCES payroll_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY (employee_id) REFERENCES employees(id),
+            FOREIGN KEY (method_id) REFERENCES payment_methods(id)
+        ) {TABLE_OPTS}""",
+
+        # allowances, bonuses, deductions and advances; payslip_id is set once applied
+        f"""CREATE TABLE employee_adjustments (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            employee_id INT NOT NULL,
+            kind VARCHAR(10) NOT NULL,
+            amount BIGINT NOT NULL,
+            effective_date DATE NOT NULL DEFAULT (CURRENT_DATE),
+            note TEXT,
+            payslip_id INT NULL,
+            CONSTRAINT chk_adj_kind CHECK (kind IN ('ALLOWANCE','BONUS','DEDUCTION','ADVANCE')),
+            CONSTRAINT chk_adj_amount CHECK (amount > 0),
+            FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+            FOREIGN KEY (payslip_id) REFERENCES payslips(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
     ]
     for sql in statements:
         c.execute(sql)
-
-    for table in ("departments", "employees", "payroll_runs"):
-        add_updated_at_trigger(c, table)
 
     add_permissions(c, [
         ("hr.view",         "View employees and attendance"),

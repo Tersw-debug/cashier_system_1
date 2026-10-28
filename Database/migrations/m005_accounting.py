@@ -1,4 +1,4 @@
-from Database.migrations.helpers import TS, add_updated_at_trigger, add_permissions
+from Database.migrations.helpers import TS, TS_UPDATED, TABLE_OPTS, add_permissions
 
 VERSION = 5
 DESCRIPTION = "Chart of accounts, journal, expenses"
@@ -30,113 +30,138 @@ ACCOUNT_SETTINGS = {
 }
 
 
+def _signal(message):
+    return f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{message}';"
+
+
 def apply(c):
     statements = [
         f"""CREATE TABLE accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            type TEXT NOT NULL CHECK (type IN ('ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE')),
-            parent_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
-            is_system INTEGER NOT NULL DEFAULT 0,
-            is_active INTEGER NOT NULL DEFAULT 1,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(20) NOT NULL UNIQUE,
+            name VARCHAR(150) NOT NULL,
+            `type` VARCHAR(20) NOT NULL,
+            parent_id INT NULL,
+            is_system TINYINT(1) NOT NULL DEFAULT 0,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at {TS},
-            updated_at {TS}
-        )""",
+            updated_at {TS_UPDATED},
+            CONSTRAINT chk_account_type CHECK (`type` IN ('ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE')),
+            FOREIGN KEY (parent_id) REFERENCES accounts(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
+
+        # source_type: 'SALE', 'PURCHASE_INVOICE', 'PAYMENT', 'EXPENSE', ...
         f"""CREATE TABLE journal_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            number TEXT NOT NULL UNIQUE,
-            entry_date TEXT NOT NULL DEFAULT (date('now','localtime')),
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            number VARCHAR(40) NOT NULL UNIQUE,
+            entry_date DATE NOT NULL DEFAULT (CURRENT_DATE),
             description TEXT,
-            source_type TEXT,            -- 'SALE', 'PURCHASE_INVOICE', 'PAYMENT', 'EXPENSE', ...
-            source_id INTEGER,
-            status TEXT NOT NULL DEFAULT 'DRAFT'
-                CHECK (status IN ('DRAFT','POSTED','REVERSED')),
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at {TS}
-        )""",
+            source_type VARCHAR(50) NULL,
+            source_id INT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+            user_id INT NULL,
+            created_at {TS},
+            CONSTRAINT chk_je_status CHECK (status IN ('DRAFT','POSTED','REVERSED')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_journal_source ON journal_entries(source_type, source_id)",
         "CREATE INDEX idx_journal_date ON journal_entries(entry_date)",
-        """CREATE TABLE journal_lines (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry_id INTEGER NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,
-            account_id INTEGER NOT NULL REFERENCES accounts(id),
-            partner_id INTEGER REFERENCES partners(id),
-            debit INTEGER NOT NULL DEFAULT 0 CHECK (debit >= 0),
-            credit INTEGER NOT NULL DEFAULT 0 CHECK (credit >= 0),
+        f"""CREATE TABLE journal_lines (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            entry_id INT NOT NULL,
+            account_id INT NOT NULL,
+            partner_id INT NULL,
+            debit BIGINT NOT NULL DEFAULT 0,
+            credit BIGINT NOT NULL DEFAULT 0,
             description TEXT,
-            CHECK ((debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0))
-        )""",
-        "CREATE INDEX idx_lines_entry ON journal_lines(entry_id)",
+            CONSTRAINT chk_jl_amounts CHECK (debit >= 0 AND credit >= 0
+                AND ((debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0))),
+            FOREIGN KEY (entry_id) REFERENCES journal_entries(id) ON DELETE CASCADE,
+            FOREIGN KEY (account_id) REFERENCES accounts(id),
+            FOREIGN KEY (partner_id) REFERENCES partners(id)
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_lines_account ON journal_lines(account_id)",
         "CREATE INDEX idx_lines_partner ON journal_lines(partner_id)",
 
         # A journal entry must be assembled as DRAFT, then posted only after validation.
-        # Explicitly reject callers that try to create a POSTED/REVERSED entry directly.
-        """CREATE TRIGGER trg_journal_entries_start_draft
+        # (Triggers do not fire for ON DELETE CASCADE in MySQL; that only affects DRAFT
+        # entries, because deleting a non-draft entry is blocked below.)
+        f"""CREATE TRIGGER trg_journal_entries_start_draft
         BEFORE INSERT ON journal_entries
-        WHEN NEW.status <> 'DRAFT'
+        FOR EACH ROW
         BEGIN
-            SELECT RAISE(ABORT, 'journal entries must be created as DRAFT');
+            IF NEW.status <> 'DRAFT' THEN
+                {_signal('journal entries must be created as DRAFT')}
+            END IF;
         END""",
-        """CREATE TRIGGER trg_journal_entries_validate_posting
-        BEFORE UPDATE OF status ON journal_entries
-        WHEN OLD.status = 'DRAFT' AND NEW.status = 'POSTED'
+        f"""CREATE TRIGGER trg_journal_entries_validate_posting
+        BEFORE UPDATE ON journal_entries
+        FOR EACH ROW
         BEGIN
-            SELECT CASE
-                WHEN (SELECT COUNT(*) FROM journal_lines WHERE entry_id = OLD.id) < 2
-                THEN RAISE(ABORT, 'cannot post a journal entry with fewer than two lines')
-            END;
-            SELECT CASE
-                WHEN COALESCE((SELECT SUM(debit) FROM journal_lines WHERE entry_id = OLD.id), 0)
-                   <> COALESCE((SELECT SUM(credit) FROM journal_lines WHERE entry_id = OLD.id), 0)
-                THEN RAISE(ABORT, 'cannot post an unbalanced journal entry')
-            END;
+            IF OLD.status = 'DRAFT' AND NEW.status = 'POSTED' THEN
+                IF (SELECT COUNT(*) FROM journal_lines WHERE entry_id = OLD.id) < 2 THEN
+                    {_signal('cannot post a journal entry with fewer than two lines')}
+                END IF;
+                IF COALESCE((SELECT SUM(debit) FROM journal_lines WHERE entry_id = OLD.id), 0)
+                   <> COALESCE((SELECT SUM(credit) FROM journal_lines WHERE entry_id = OLD.id), 0) THEN
+                    {_signal('cannot post an unbalanced journal entry')}
+                END IF;
+            END IF;
         END""",
         # Once posted, header fields are immutable. The only permitted header transition
         # is POSTED -> REVERSED, with all other fields unchanged.
-        """CREATE TRIGGER trg_journal_entries_no_update_after_posting
+        f"""CREATE TRIGGER trg_journal_entries_no_update_after_posting
         BEFORE UPDATE ON journal_entries
-        WHEN OLD.status <> 'DRAFT'
-         AND NOT (
-            OLD.status = 'POSTED'
-            AND NEW.status = 'REVERSED'
-            AND NEW.id IS OLD.id
-            AND NEW.number IS OLD.number
-            AND NEW.entry_date IS OLD.entry_date
-            AND NEW.description IS OLD.description
-            AND NEW.source_type IS OLD.source_type
-            AND NEW.source_id IS OLD.source_id
-            AND NEW.user_id IS OLD.user_id
-            AND NEW.created_at IS OLD.created_at
-         )
+        FOR EACH ROW
         BEGIN
-            SELECT RAISE(ABORT, 'posted journal entries are immutable; post a reversal instead');
+            IF OLD.status <> 'DRAFT'
+               AND NOT (
+                    OLD.status = 'POSTED'
+                    AND NEW.status = 'REVERSED'
+                    AND NEW.id <=> OLD.id
+                    AND NEW.number <=> OLD.number
+                    AND NEW.entry_date <=> OLD.entry_date
+                    AND NEW.description <=> OLD.description
+                    AND NEW.source_type <=> OLD.source_type
+                    AND NEW.source_id <=> OLD.source_id
+                    AND NEW.user_id <=> OLD.user_id
+                    AND NEW.created_at <=> OLD.created_at
+               ) THEN
+                {_signal('posted journal entries are immutable; post a reversal instead')}
+            END IF;
         END""",
-        """CREATE TRIGGER trg_journal_lines_insert_only_draft
+        f"""CREATE TRIGGER trg_journal_lines_insert_only_draft
         BEFORE INSERT ON journal_lines
-        WHEN COALESCE((SELECT status FROM journal_entries WHERE id = NEW.entry_id), '') <> 'DRAFT'
+        FOR EACH ROW
         BEGIN
-            SELECT RAISE(ABORT, 'journal lines can only be added to DRAFT entries');
+            IF COALESCE((SELECT status FROM journal_entries WHERE id = NEW.entry_id), '') <> 'DRAFT' THEN
+                {_signal('journal lines can only be added to DRAFT entries')}
+            END IF;
         END""",
-        """CREATE TRIGGER trg_journal_lines_no_update_after_posting
+        f"""CREATE TRIGGER trg_journal_lines_no_update_after_posting
         BEFORE UPDATE ON journal_lines
-        WHEN COALESCE((SELECT status FROM journal_entries WHERE id = OLD.entry_id), '') <> 'DRAFT'
-          OR COALESCE((SELECT status FROM journal_entries WHERE id = NEW.entry_id), '') <> 'DRAFT'
+        FOR EACH ROW
         BEGIN
-            SELECT RAISE(ABORT, 'posted journal lines are immutable; post a reversal instead');
+            IF COALESCE((SELECT status FROM journal_entries WHERE id = OLD.entry_id), '') <> 'DRAFT'
+               OR COALESCE((SELECT status FROM journal_entries WHERE id = NEW.entry_id), '') <> 'DRAFT' THEN
+                {_signal('posted journal lines are immutable; post a reversal instead')}
+            END IF;
         END""",
-        """CREATE TRIGGER trg_journal_lines_no_delete_after_posting
+        f"""CREATE TRIGGER trg_journal_lines_no_delete_after_posting
         BEFORE DELETE ON journal_lines
-        WHEN COALESCE((SELECT status FROM journal_entries WHERE id = OLD.entry_id), '') <> 'DRAFT'
+        FOR EACH ROW
         BEGIN
-            SELECT RAISE(ABORT, 'posted journal lines are immutable; post a reversal instead');
+            IF COALESCE((SELECT status FROM journal_entries WHERE id = OLD.entry_id), '') <> 'DRAFT' THEN
+                {_signal('posted journal lines are immutable; post a reversal instead')}
+            END IF;
         END""",
-        """CREATE TRIGGER trg_journal_entries_no_delete_after_posting
+        f"""CREATE TRIGGER trg_journal_entries_no_delete_after_posting
         BEFORE DELETE ON journal_entries
-        WHEN OLD.status <> 'DRAFT'
+        FOR EACH ROW
         BEGIN
-            SELECT RAISE(ABORT, 'posted journal entries cannot be deleted');
+            IF OLD.status <> 'DRAFT' THEN
+                {_signal('posted journal entries cannot be deleted')}
+            END IF;
         END""",
 
         # Audit backstop: should be empty for every POSTED/REVERSED entry.
@@ -153,34 +178,41 @@ def apply(c):
         HAVING COUNT(jl.id) < 2
             OR COALESCE(SUM(jl.debit), 0) <> COALESCE(SUM(jl.credit), 0)""",
 
+        # account_id must be an EXPENSE account
         f"""CREATE TABLE expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            number TEXT NOT NULL UNIQUE,
-            expense_date TEXT NOT NULL DEFAULT (date('now','localtime')),
-            account_id INTEGER NOT NULL REFERENCES accounts(id),      -- an EXPENSE account
-            method_id INTEGER NOT NULL REFERENCES payment_methods(id),
-            partner_id INTEGER REFERENCES partners(id),
-            shift_id INTEGER REFERENCES cash_shifts(id),
-            amount INTEGER NOT NULL CHECK (amount > 0),
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            number VARCHAR(40) NOT NULL UNIQUE,
+            expense_date DATE NOT NULL DEFAULT (CURRENT_DATE),
+            account_id INT NOT NULL,
+            method_id INT NOT NULL,
+            partner_id INT NULL,
+            shift_id INT NULL,
+            amount BIGINT NOT NULL,
             description TEXT,
-            journal_entry_id INTEGER REFERENCES journal_entries(id),
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at {TS}
-        )""",
+            journal_entry_id INT NULL,
+            user_id INT NULL,
+            created_at {TS},
+            CONSTRAINT chk_expense_amount CHECK (amount > 0),
+            FOREIGN KEY (account_id) REFERENCES accounts(id),
+            FOREIGN KEY (method_id) REFERENCES payment_methods(id),
+            FOREIGN KEY (partner_id) REFERENCES partners(id),
+            FOREIGN KEY (shift_id) REFERENCES cash_shifts(id),
+            FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_expenses_date ON expenses(expense_date)",
 
         # payment methods post to an account (cash drawer vs bank)
-        "ALTER TABLE payment_methods ADD COLUMN account_id INTEGER REFERENCES accounts(id)",
+        "ALTER TABLE payment_methods ADD COLUMN account_id INT NULL, "
+        "ADD CONSTRAINT fk_payment_methods_account FOREIGN KEY (account_id) REFERENCES accounts(id)",
     ]
     for sql in statements:
         c.execute(sql)
 
-    add_updated_at_trigger(c, "accounts")
-
     c.executemany(
-        "INSERT INTO accounts (code, name, type, is_system) VALUES (?, ?, ?, 1)", ACCOUNTS
+        "INSERT INTO accounts (code, name, `type`, is_system) VALUES (?, ?, ?, 1)", ACCOUNTS
     )
-    c.executemany("INSERT INTO settings (key, value) VALUES (?, ?)", list(ACCOUNT_SETTINGS.items()))
+    c.executemany("INSERT INTO settings (`key`, `value`) VALUES (?, ?)", list(ACCOUNT_SETTINGS.items()))
 
     c.execute("""UPDATE payment_methods SET account_id =
                  (SELECT id FROM accounts WHERE code = '1000') WHERE kind = 'CASH'""")

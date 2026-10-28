@@ -26,12 +26,12 @@ def _money_round(value: Decimal) -> int:
 
 
 def _setting(c, key: str, default: str | None = None) -> str | None:
-    row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    row = c.execute("SELECT value FROM settings WHERE `key`=?", (key,)).fetchone()
     return row[0] if row else default
 
 
 def get_currency_decimals() -> int:
-    row = db.fetch_one("SELECT value FROM settings WHERE key='currency_decimals'")
+    row = db.fetch_one("SELECT value FROM settings WHERE `key`='currency_decimals'")
     try:
         decimals = int(row[0]) if row and row[0] is not None else 2
     except (TypeError, ValueError):
@@ -262,13 +262,13 @@ def get_customer_by_name_phone(name: str, phone: str | None = None) -> int | Non
     if phone and phone.strip():
         row = db.fetch_one(
             """SELECT id FROM partners
-               WHERE is_customer=1 AND name=? COLLATE NOCASE AND phone=? LIMIT 1""",
+               WHERE is_customer=1 AND LOWER(name)=LOWER(?) AND phone=? LIMIT 1""",
             (name, phone.strip()),
         )
     else:
         row = db.fetch_one(
             """SELECT id FROM partners
-               WHERE is_customer=1 AND name=? COLLATE NOCASE LIMIT 1""",
+               WHERE is_customer=1 AND LOWER(name)=LOWER(?) LIMIT 1""",
             (name,),
         )
     return int(row[0]) if row else None
@@ -276,7 +276,7 @@ def get_customer_by_name_phone(name: str, phone: str | None = None) -> int | Non
 
 def get_username_id(username: str) -> int | None:
     row = db.fetch_one(
-        "SELECT id FROM users WHERE username=? COLLATE NOCASE AND is_active=1",
+        "SELECT id FROM users WHERE userLOWER(name)=LOWER(?) AND is_active=1",
         (str(username).strip(),),
     )
     return int(row[0]) if row else None
@@ -396,7 +396,7 @@ def close_cashier_shift(shift_id: int, closing_cash_minor: int, user_id: int) ->
             - int(cash_expenses or 0) - int(cash_returns or 0)
         )
         c.execute(
-            """UPDATE cash_shifts SET closed_at=datetime('now','localtime'),
+            """UPDATE cash_shifts SET closed_at=CURRENT_TIMESTAMP,
                closing_cash=?,expected_cash=?,status='CLOSED' WHERE id=?""",
             (closing_cash_minor, expected, shift_id),
         )
@@ -473,7 +473,7 @@ def create_cashier_sale(
                 raise ValueError("اختر عميلًا موجودًا أو أدخل عميلًا جديدًا، وليس الاثنين معًا")
             existing = c.execute(
                 """SELECT id FROM partners
-                   WHERE is_customer=1 AND name=? COLLATE NOCASE
+                   WHERE is_customer=1 AND LOWER(name)=LOWER(?)
                      AND COALESCE(phone,'')=COALESCE(?,'') LIMIT 1""",
                 (new_customer_name, new_customer_phone),
             ).fetchone()

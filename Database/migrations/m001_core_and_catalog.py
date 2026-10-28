@@ -1,116 +1,130 @@
-from Database.migrations.helpers import TS, add_updated_at_trigger
+from Database.migrations.helpers import TS, TS_UPDATED, TABLE_OPTS
 
 VERSION = 1
-DESCRIPTION = "Core, security and catalog"
+DESCRIPTION = "Core, security and catalog (MySQL 8)"
 
 
 def apply(c):
+    # NOTE: MySQL ignores inline "REFERENCES"; every foreign key is an explicit FOREIGN KEY clause.
     statements = [
         # ---------- settings ----------
         f"""CREATE TABLE settings (
-            key TEXT PRIMARY KEY,
-            value TEXT,
-            updated_at {TS}
-        )""",
+            `key` VARCHAR(100) NOT NULL PRIMARY KEY,
+            `value` TEXT,
+            updated_at {TS_UPDATED}
+        ) {TABLE_OPTS}""",
 
         # ---------- security ----------
         f"""CREATE TABLE roles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            description TEXT,
-            is_system INTEGER NOT NULL DEFAULT 0,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL UNIQUE,
+            description VARCHAR(255),
+            is_system TINYINT(1) NOT NULL DEFAULT 0,
             created_at {TS},
-            updated_at {TS}
-        )""",
-        """CREATE TABLE permissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT NOT NULL UNIQUE,
-            description TEXT
-        )""",
-        """CREATE TABLE role_permissions (
-            role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-            permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
-            PRIMARY KEY (role_id, permission_id)
-        )""",
+            updated_at {TS_UPDATED}
+        ) {TABLE_OPTS}""",
+        f"""CREATE TABLE permissions (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(100) NOT NULL UNIQUE,
+            description VARCHAR(255)
+        ) {TABLE_OPTS}""",
+        f"""CREATE TABLE role_permissions (
+            role_id INT NOT NULL,
+            permission_id INT NOT NULL,
+            PRIMARY KEY (role_id, permission_id),
+            FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+            FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+        ) {TABLE_OPTS}""",
         f"""CREATE TABLE users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-            password_hash TEXT NOT NULL,
-            full_name TEXT,
-            role_id INTEGER NOT NULL REFERENCES roles(id),
-            is_active INTEGER NOT NULL DEFAULT 1,
-            must_change_password INTEGER NOT NULL DEFAULT 0,
-            last_login_at TEXT,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            full_name VARCHAR(150),
+            role_id INT NOT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            must_change_password TINYINT(1) NOT NULL DEFAULT 0,
+            last_login_at DATETIME NULL,
             created_at {TS},
-            updated_at {TS}
-        )""",
+            updated_at {TS_UPDATED},
+            FOREIGN KEY (role_id) REFERENCES roles(id)
+        ) {TABLE_OPTS}""",
         f"""CREATE TABLE audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             created_at {TS},
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            action TEXT NOT NULL,
-            entity TEXT NOT NULL,
-            entity_id INTEGER,
-            old_values TEXT,
-            new_values TEXT,
-            note TEXT
-        )""",
+            user_id INT NULL,
+            action VARCHAR(100) NOT NULL,
+            entity VARCHAR(100) NOT NULL,
+            entity_id BIGINT NULL,
+            old_values MEDIUMTEXT,
+            new_values MEDIUMTEXT,
+            note TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) {TABLE_OPTS}""",
         "CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id)",
         "CREATE INDEX idx_audit_created ON audit_log(created_at)",
 
         # ---------- catalog ----------
         f"""CREATE TABLE units (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            symbol TEXT,
-            is_active INTEGER NOT NULL DEFAULT 1,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL UNIQUE,
+            symbol VARCHAR(20),
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at {TS},
-            updated_at {TS}
-        )""",
+            updated_at {TS_UPDATED}
+        ) {TABLE_OPTS}""",
+
+        # Section names are unique PER PARENT (the same "A4" / "colorful" can exist under
+        # every category). parent_key makes root sections (parent_id NULL) comparable,
+        # because MySQL treats NULLs as distinct in unique indexes.
         f"""CREATE TABLE sections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-            parent_id INTEGER REFERENCES sections(id) ON DELETE SET NULL,
-            sort_order INTEGER NOT NULL DEFAULT 0,
-            is_active INTEGER NOT NULL DEFAULT 1,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(150) NOT NULL,
+            parent_id INT NULL,
+            sort_order INT NOT NULL DEFAULT 0,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at {TS},
-            updated_at {TS}
-        )""",
+            updated_at {TS_UPDATED},
+            parent_key INT GENERATED ALWAYS AS (IFNULL(parent_id, 0)) VIRTUAL INVISIBLE,
+            UNIQUE KEY ux_sections_parent_name (parent_key, name),
+            FOREIGN KEY (parent_id) REFERENCES sections(id) ON DELETE RESTRICT
+        ) {TABLE_OPTS}""",
+
+        # MySQL has no partial unique index, so "unique name among ACTIVE products"
+        # is emulated with a generated column that is NULL for inactive rows.
         f"""CREATE TABLE products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sku TEXT UNIQUE,
-            name TEXT NOT NULL,
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            sku VARCHAR(100) UNIQUE,
+            name VARCHAR(255) NOT NULL,
             description TEXT,
-            section_id INTEGER REFERENCES sections(id) ON DELETE SET NULL,
-            unit_id INTEGER REFERENCES units(id),
-            color TEXT CHECK (
-                color IS NULL OR
-                color GLOB '#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'
-            ),
-            cost_price INTEGER NOT NULL DEFAULT 0 CHECK (cost_price >= 0),
-            sell_price INTEGER NOT NULL CHECK (sell_price >= 0),
-            min_quantity REAL NOT NULL DEFAULT 0,
-            track_stock INTEGER NOT NULL DEFAULT 1,
-            is_active INTEGER NOT NULL DEFAULT 1,
+            section_id INT NULL,
+            unit_id INT NULL,
+            color CHAR(7) NULL,
+            cost_price BIGINT NOT NULL DEFAULT 0,
+            sell_price BIGINT NOT NULL,
+            min_quantity DECIMAL(18,3) NOT NULL DEFAULT 0,
+            track_stock TINYINT(1) NOT NULL DEFAULT 1,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at {TS},
-            updated_at {TS}
-        )""",
-        "CREATE UNIQUE INDEX uq_products_active_name ON products(name) WHERE is_active = 1",
-        "CREATE INDEX idx_products_section ON products(section_id)",
-        """CREATE TABLE product_barcodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            barcode TEXT NOT NULL UNIQUE,
-            is_primary INTEGER NOT NULL DEFAULT 0
-        )""",
-        "CREATE INDEX idx_barcodes_product ON product_barcodes(product_id)",
+            updated_at {TS_UPDATED},
+            active_name VARCHAR(255) GENERATED ALWAYS AS (IF(is_active = 1, name, NULL)) VIRTUAL INVISIBLE,
+            UNIQUE KEY uq_products_active_name (active_name),
+            CONSTRAINT chk_products_color CHECK (color IS NULL OR color REGEXP '^#[0-9A-Fa-f]{{6}}$'),
+            CONSTRAINT chk_products_cost CHECK (cost_price >= 0),
+            CONSTRAINT chk_products_sell CHECK (sell_price >= 0),
+            FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE SET NULL,
+            FOREIGN KEY (unit_id) REFERENCES units(id)
+        ) {TABLE_OPTS}""",
+        f"""CREATE TABLE product_barcodes (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            product_id INT NOT NULL,
+            barcode VARCHAR(64) NOT NULL UNIQUE,
+            is_primary TINYINT(1) NOT NULL DEFAULT 0,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        ) {TABLE_OPTS}""",
     ]
 
     for sql in statements:
         c.execute(sql)
-
-    for table in ("roles", "users", "units", "sections", "products"):
-        add_updated_at_trigger(c, table)
 
     # ---------- seed data ----------
     permissions = [
@@ -141,6 +155,6 @@ def apply(c):
 
     c.execute("INSERT INTO units (name, symbol) VALUES ('قطعة', 'pcs')")
     c.executemany(
-        "INSERT INTO settings (key, value) VALUES (?, ?)",
+        "INSERT INTO settings (`key`, `value`) VALUES (?, ?)",
         [("company_name", ""), ("currency_symbol", ""), ("currency_decimals", "2")]
     )
