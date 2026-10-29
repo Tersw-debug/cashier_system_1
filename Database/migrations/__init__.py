@@ -5,6 +5,7 @@ from . import (
     m004_sales_payments,
     m005_accounting,
     m006_hr,
+    m007_customer_debt,
 )
 
 ALL_MIGRATIONS = [
@@ -14,4 +15,5 @@ ALL_MIGRATIONS = [
     m004_sales_payments,
     m005_accounting,
     m006_hr,
+    m007_customer_debt,
 ]

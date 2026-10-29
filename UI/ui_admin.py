@@ -13,6 +13,7 @@ import customtkinter as ctk
 from Services import admin_service as svc
 from UI.router import go_login
 from UI.rtl import fix
+import json
 
 username = ""
 _root = None
@@ -65,7 +66,7 @@ ADMIN_GROUPS = [
     ("المخزون", [
         ("أرصدة المخزون", "stock_levels"), ("الأصناف منخفضة المخزون", "low_stock_products"),
         ("حركة المخزون", "stock_movements"), ("تقييم تقريبي للمخزون", "stock_valuation"),
-        ("المخازن", "warehouses"), ("التحويلات", "stock_transfers"), ("بنود التحويلات", "stock_transfer_items"),
+        ("المخازن", "warehouses"), ("التحويلات", "stock_transfers"), ("بنود التحويلات", "stock_transfer_items"),("سجل حركة الديون", "debt_log"),
     ]),
     ("المبيعات والمشتريات", [
         ("العملاء والموردون", "partners"), ("أرصدة العملاء", "customer_balances"),
@@ -323,6 +324,86 @@ def _selected_row(tree):
     vals = item.get("values", [])
     return vals if vals else None
 
+def _open_audit_log_details(tree, parent, columns):
+    """Show all audit fields, including formatted old/new JSON values."""
+    vals = _selected_row(tree)
+
+    if not vals:
+        messagebox.showwarning(
+            "تنبيه",
+            "اختر سجلًا أولًا لعرض تفاصيله.",
+            parent=parent,
+        )
+        return
+
+    details = {}
+
+    for index, heading in enumerate(columns):
+        value = vals[index] if index < len(vals) else ""
+
+        # The JSON properties occupy columns 7 and 8 in both audit resources.
+        if index in (7, 8) and value:
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                # Preserve the original value if it is not valid JSON.
+                pass
+
+        details[str(heading)] = value
+
+    colors = _appearance_colors()
+
+    win = ctk.CTkToplevel(parent)
+    win.title("تفاصيل سجل التدقيق")
+    win.geometry("950x700")
+    win.minsize(650, 450)
+    win.configure(fg_color=colors["bg"])
+    win.transient(parent)
+
+    header = ctk.CTkFrame(
+        win,
+        fg_color=colors["card"],
+        corner_radius=10,
+    )
+    header.pack(fill="x", padx=14, pady=(14, 8))
+
+    ctk.CTkLabel(
+        header,
+        text="تفاصيل سجل التدقيق",
+        font=("Segoe UI", 21, "bold"),
+        text_color=colors["text"],
+    ).pack(anchor="e", padx=14, pady=12)
+
+    text_box = ctk.CTkTextbox(
+        win,
+        wrap="word",
+        font=("Consolas", 12),
+    )
+    text_box.pack(
+        fill="both",
+        expand=True,
+        padx=14,
+        pady=8,
+    )
+
+    formatted = json.dumps(
+        details,
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+    text_box.insert("1.0", formatted)
+    text_box.configure(state="disabled")
+
+    ctk.CTkButton(
+        win,
+        text="إغلاق",
+        width=120,
+        height=36,
+        fg_color="#6b7280",
+        command=win.destroy,
+    ).pack(pady=(4, 14))
 
 def _open_stock_adjustment(refresh):
     fields = [
@@ -592,9 +673,24 @@ def _resource_action_buttons(resource, toolbar, refresh, tree):
     colors = _appearance_colors()
     def add_action(label, func):
         ctk.CTkButton(toolbar, text=label, command=func, height=34, fg_color=colors["accent"], hover_color=colors["accent_hover"]).pack(side="right", padx=4, pady=4)
-    if resource == "stock_levels":
-        add_action("تسوية مخزون", lambda: _open_stock_adjustment(refresh))
-        add_action("تحويل بين المخازن", lambda: _open_transfer(refresh))
+    if resource in {"debt_log", "audit_log"}:
+        add_action(
+            "عرض تفاصيل السجل",
+            lambda: _open_audit_log_details(
+                tree,
+                tree.winfo_toplevel(),
+                svc.RESOURCE_CONFIG[resource]["columns"],
+            ),
+        )
+    elif resource == "stock_levels":
+        add_action(
+            "تسوية مخزون",
+            lambda: _open_stock_adjustment(refresh),
+        )
+        add_action(
+            "تحويل بين المخازن",
+            lambda: _open_transfer(refresh),
+        )
     elif resource == "stock_transfers":
         add_action("تحويل جديد", lambda: _open_transfer(refresh))
     elif resource == "sales":
@@ -734,7 +830,26 @@ def open_resource_window(resource: str):
             ctk.CTkButton(toolbar, text="تعطيل", width=90, height=34, fg_color=colors["danger"], command=deactivate_selected).pack(side="left", padx=3)
 
     _resource_action_buttons(resource, toolbar, refresh, tree)
-    tree.bind("<Double-1>", lambda _e: _open_entity_editor(resource, _parse_record_id(resource, _selected_row(tree)[0]), refresh) if cfg.get("editable") and _selected_row(tree) else None)
+    def handle_tree_double_click(_event=None):
+        if resource in {"debt_log", "audit_log"}:
+            _open_audit_log_details(
+                tree,
+                win,
+                cfg["columns"],
+            )
+            return
+
+        if cfg.get("editable"):
+            vals = _selected_row(tree)
+            if vals:
+                _open_entity_editor(
+                    resource,
+                    _parse_record_id(resource, vals[0]),
+                    refresh,
+                )
+
+
+    tree.bind("<Double-1>", handle_tree_double_click)
     refresh()
     # RTL: start scrolled to the right edge so the first (rightmost) columns are visible.
     win.after(100, lambda: tree.xview_moveto(1.0))
@@ -764,6 +879,10 @@ def open_products_shortage_page():
 def open_inventory_history_page():
     return open_resource_window("stock_movements")
 
+
+def open_debt_log_page():
+    """Open the full debt activity window for the admin."""
+    return open_resource_window("debt_log")
 
 def open_statistics_page():
     colors = _appearance_colors()
@@ -871,7 +990,7 @@ def open_admin(root):
     footer.pack_propagate(False)
     ctk.CTkButton(footer, text="خروج", width=100, fg_color=colors["danger"], command=root.destroy).pack(side="left", padx=12, pady=8)
     ctk.CTkButton(footer, text="تبديل المستخدم", width=140, fg_color="#6b7280", command=lambda: [shell.destroy(), go_login(root)]).pack(side="left", padx=6, pady=8)
-    ctk.CTkLabel(footer, text="MyShop ERP — SQLite/SQLCipher", text_color=colors["subtext"]).pack(side="right", padx=18)
+    ctk.CTkLabel(footer, text="MyShop ERP — MySQL 8", text_color=colors["subtext"]).pack(side="right", padx=18)
 
     def refresh_dashboard():
         try:

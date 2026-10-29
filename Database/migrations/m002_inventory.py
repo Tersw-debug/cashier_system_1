@@ -123,11 +123,19 @@ def apply(c):
     # ---------- seed ----------
     c.execute("INSERT INTO warehouses (name, code, is_default) VALUES ('المخزن الرئيسي', 'MAIN', 1)")
     c.executemany(
-        "INSERT INTO doc_sequences (name, prefix) VALUES (?, ?)",
-        [("TRANSFER", "TRF-"), ("PURCHASE_ORDER", "PO-"), ("PURCHASE_INVOICE", "PINV-"),
-         ("SALE", "INV-"), ("SALE_RETURN", "RET-"), ("PAYMENT", "PAY-"),
-         ("EXPENSE", "EXP-"), ("JOURNAL", "JE-"), ("PAYROLL", "PR-")]
-    )
+    "INSERT INTO doc_sequences (name, prefix) VALUES (%s, %s)",
+    [
+        ("TRANSFER", "TRF-"),
+        ("PURCHASE_ORDER", "PO-"),
+        ("PURCHASE_INVOICE", "PINV-"),
+        ("SALE", "INV-"),
+        ("SALE_RETURN", "RET-"),
+        ("PAYMENT", "PAY-"),
+        ("EXPENSE", "EXP-"),
+        ("JOURNAL", "JE-"),
+        ("PAYROLL", "PR-"),
+    ],
+)
     c.execute("INSERT INTO settings (`key`, `value`) VALUES ('allow_negative_stock', '0')")
 
     add_permissions(c, [

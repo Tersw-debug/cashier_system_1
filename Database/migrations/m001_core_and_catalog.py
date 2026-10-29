@@ -138,7 +138,7 @@ def apply(c):
         ("products.delete", "Deactivate products"),
         ("sections.manage", "Manage sections"),
     ]
-    c.executemany("INSERT INTO permissions (code, description) VALUES (?, ?)", permissions)
+    c.executemany("INSERT INTO permissions (code, description) VALUES (%s, %s)", permissions)
 
     c.execute("INSERT INTO roles (name, description, is_system) VALUES ('Admin', 'Full access', 1)")
     admin_role = c.lastrowid
@@ -149,12 +149,12 @@ def apply(c):
     perm_ids = {code: pid for pid, code in c.fetchall()}
 
     for pid in perm_ids.values():
-        c.execute("INSERT INTO role_permissions VALUES (?, ?)", (admin_role, pid))
-    c.execute("INSERT INTO role_permissions VALUES (?, ?)",
+        c.execute("INSERT INTO role_permissions VALUES (%s, %s)", (admin_role, pid))
+    c.execute("INSERT INTO role_permissions VALUES (%s, %s)",
               (cashier_role, perm_ids["products.view"]))
 
     c.execute("INSERT INTO units (name, symbol) VALUES ('قطعة', 'pcs')")
     c.executemany(
-        "INSERT INTO settings (`key`, `value`) VALUES (?, ?)",
+        "INSERT INTO settings (`key`, `value`) VALUES (%s, %s)",
         [("company_name", ""), ("currency_symbol", ""), ("currency_decimals", "2")]
     )

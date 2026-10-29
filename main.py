@@ -1,515 +1,231 @@
 from __future__ import annotations
-from tkinter import *
-from UI.basewindow import BaseWindow
-from UI.router import go_login
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+
+import sys
+from pathlib import Path
 from tkinter import messagebox
+
 from Database.Schema import db, DatabaseError
 from Database.migrator import MigrationError
 from Database.keystore import KeyStoreError
 from Services.bootstrap import ensure_first_admin
-from UI import rtl 
-from Services import admin_service as svc
-
-pdfmetrics.registerFont(TTFont("Amiri", "Amiri-Regular.ttf"))
-
-APP_DB_VERSION = 2   # bumped because of the new products.section column
-
-try:
-    db.initialize()
-    first_password = ensure_first_admin()
-except (DatabaseError, MigrationError, KeyStoreError) as e:
-    messagebox.showerror("Database error", str(e))
-    raise SystemExit(1)
 
 
-"""Seeds the print-shop catalog:
-category -> size -> face -> colour mode -> 4 products each (144 products).
-
-Run once from main:
-    from Services.seed_catalog import seed_print_catalog
-    seed_print_catalog()
-Safe to run again: existing sections (same name + parent) and SKUs are skipped.
-NOTE: skipped SKUs keep their old prices/stock, so use a fresh DB to apply mock data.
-"""
-
-# =============================================================================
-# EDIT THESE VARIABLES  (money = smallest currency unit, 100 = 1.00 EGP)
-# =============================================================================
-CATEGORY = ["جملة", "خدمة", "كتب"]
-SIZES = ["A4", "A3", "A3+"]
-FACES = ["one face", "double face"]
-COLOR_MODES = ["black and white", "colorful"]
-PAPERS = ["normal", "glossy", "sticker", "double glossy"]
-
-BASE_SELL_PRICE = {
-    "A4":  {"normal": 100, "glossy": 200, "sticker": 300, "double glossy": 350},
-    "A3":  {"normal": 200, "glossy": 400, "sticker": 600, "double glossy": 700},
-    "A3+": {"normal": 250, "glossy": 500, "sticker": 750, "double glossy": 850},
-}
-BASE_COST_PRICE = {
-    "A4":  {"normal": 50,  "glossy": 100, "sticker": 150, "double glossy": 180},
-    "A3":  {"normal": 100, "glossy": 200, "sticker": 300, "double glossy": 360},
-    "A3+": {"normal": 125, "glossy": 250, "sticker": 375, "double glossy": 430},
-}
-FACE_MULTIPLIER = {"one face": 1.0, "double face": 1.8}
-COLOR_MULTIPLIER = {"black and white": 1.0, "colorful": 2.5}
-
-# Per-category rules (missing category -> 1.0 / tracked).
-CATEGORY_SELL_MULTIPLIER = {"جملة": 0.8, "خدمة": 1.0, "كتب": 1.25}
-CATEGORY_TRACK_STOCK = {"جملة": 1, "خدمة": 0, "كتب": 1}   # services: no stock
-
-DEFAULT_QUANTITY = 0
-MIN_QUANTITY = 10
-UNIT_NAME = "ورقة"
-
-# ---- Mock data ---------------------------------------------------------------
-# Gives every product a deterministic quantity that cycles through the cases
-# you want to test: out of stock, low stock, exactly at the threshold, normal, huge.
-USE_MOCK_DATA = True
-MOCK_QUANTITY_CYCLE = [0, 3, 8, 10, 25, 120, 500, 2500]
-
-# Exceptions. Key: (category, size, face, color_mode, paper) -> value.
-"""Full mock data: one explicit price + quantity for EVERY product (144).
-Paste over SELL_PRICE_OVERRIDES / QUANTITY_OVERRIDES in seed_catalog.py.
-Key: (category, size, face, color_mode, paper). Quantity cycle includes 0, low (<10),
-exactly 10 (threshold), normal and large values.
-NOTE: set CATEGORY_TRACK_STOCK["خدمة"] = 1 or the service quantities are ignored."""
-
-SELL_PRICE_OVERRIDES: dict[tuple[str, str, str, str, str], int] = {
-    ("جملة", "A4", "one face", "black and white", "normal"): 80,
-    ("جملة", "A4", "one face", "black and white", "glossy"): 160,
-    ("جملة", "A4", "one face", "black and white", "sticker"): 240,
-    ("جملة", "A4", "one face", "black and white", "double glossy"): 280,
-    ("جملة", "A4", "one face", "colorful", "normal"): 200,
-    ("جملة", "A4", "one face", "colorful", "glossy"): 400,
-    ("جملة", "A4", "one face", "colorful", "sticker"): 600,
-    ("جملة", "A4", "one face", "colorful", "double glossy"): 700,
-    ("جملة", "A4", "double face", "black and white", "normal"): 144,
-    ("جملة", "A4", "double face", "black and white", "glossy"): 288,
-    ("جملة", "A4", "double face", "black and white", "sticker"): 432,
-    ("جملة", "A4", "double face", "black and white", "double glossy"): 504,
-    ("جملة", "A4", "double face", "colorful", "normal"): 360,
-    ("جملة", "A4", "double face", "colorful", "glossy"): 720,
-    ("جملة", "A4", "double face", "colorful", "sticker"): 1080,
-    ("جملة", "A4", "double face", "colorful", "double glossy"): 1260,
-
-    ("جملة", "A3", "one face", "black and white", "normal"): 160,
-    ("جملة", "A3", "one face", "black and white", "glossy"): 320,
-    ("جملة", "A3", "one face", "black and white", "sticker"): 480,
-    ("جملة", "A3", "one face", "black and white", "double glossy"): 560,
-    ("جملة", "A3", "one face", "colorful", "normal"): 400,
-    ("جملة", "A3", "one face", "colorful", "glossy"): 800,
-    ("جملة", "A3", "one face", "colorful", "sticker"): 1200,
-    ("جملة", "A3", "one face", "colorful", "double glossy"): 1400,
-    ("جملة", "A3", "double face", "black and white", "normal"): 288,
-    ("جملة", "A3", "double face", "black and white", "glossy"): 576,
-    ("جملة", "A3", "double face", "black and white", "sticker"): 864,
-    ("جملة", "A3", "double face", "black and white", "double glossy"): 1008,
-    ("جملة", "A3", "double face", "colorful", "normal"): 720,
-    ("جملة", "A3", "double face", "colorful", "glossy"): 1440,
-    ("جملة", "A3", "double face", "colorful", "sticker"): 2160,
-    ("جملة", "A3", "double face", "colorful", "double glossy"): 2520,
-
-    ("جملة", "A3+", "one face", "black and white", "normal"): 200,
-    ("جملة", "A3+", "one face", "black and white", "glossy"): 400,
-    ("جملة", "A3+", "one face", "black and white", "sticker"): 600,
-    ("جملة", "A3+", "one face", "black and white", "double glossy"): 680,
-    ("جملة", "A3+", "one face", "colorful", "normal"): 500,
-    ("جملة", "A3+", "one face", "colorful", "glossy"): 1000,
-    ("جملة", "A3+", "one face", "colorful", "sticker"): 1500,
-    ("جملة", "A3+", "one face", "colorful", "double glossy"): 1700,
-    ("جملة", "A3+", "double face", "black and white", "normal"): 360,
-    ("جملة", "A3+", "double face", "black and white", "glossy"): 720,
-    ("جملة", "A3+", "double face", "black and white", "sticker"): 1080,
-    ("جملة", "A3+", "double face", "black and white", "double glossy"): 1224,
-    ("جملة", "A3+", "double face", "colorful", "normal"): 900,
-    ("جملة", "A3+", "double face", "colorful", "glossy"): 1800,
-    ("جملة", "A3+", "double face", "colorful", "sticker"): 2700,
-    ("جملة", "A3+", "double face", "colorful", "double glossy"): 3060,
-
-    ("خدمة", "A4", "one face", "black and white", "normal"): 100,
-    ("خدمة", "A4", "one face", "black and white", "glossy"): 200,
-    ("خدمة", "A4", "one face", "black and white", "sticker"): 300,
-    ("خدمة", "A4", "one face", "black and white", "double glossy"): 350,
-    ("خدمة", "A4", "one face", "colorful", "normal"): 250,
-    ("خدمة", "A4", "one face", "colorful", "glossy"): 500,
-    ("خدمة", "A4", "one face", "colorful", "sticker"): 750,
-    ("خدمة", "A4", "one face", "colorful", "double glossy"): 875,
-    ("خدمة", "A4", "double face", "black and white", "normal"): 180,
-    ("خدمة", "A4", "double face", "black and white", "glossy"): 360,
-    ("خدمة", "A4", "double face", "black and white", "sticker"): 540,
-    ("خدمة", "A4", "double face", "black and white", "double glossy"): 630,
-    ("خدمة", "A4", "double face", "colorful", "normal"): 450,
-    ("خدمة", "A4", "double face", "colorful", "glossy"): 900,
-    ("خدمة", "A4", "double face", "colorful", "sticker"): 1350,
-    ("خدمة", "A4", "double face", "colorful", "double glossy"): 1575,
-
-    ("خدمة", "A3", "one face", "black and white", "normal"): 200,
-    ("خدمة", "A3", "one face", "black and white", "glossy"): 400,
-    ("خدمة", "A3", "one face", "black and white", "sticker"): 600,
-    ("خدمة", "A3", "one face", "black and white", "double glossy"): 700,
-    ("خدمة", "A3", "one face", "colorful", "normal"): 500,
-    ("خدمة", "A3", "one face", "colorful", "glossy"): 1000,
-    ("خدمة", "A3", "one face", "colorful", "sticker"): 1500,
-    ("خدمة", "A3", "one face", "colorful", "double glossy"): 1750,
-    ("خدمة", "A3", "double face", "black and white", "normal"): 360,
-    ("خدمة", "A3", "double face", "black and white", "glossy"): 720,
-    ("خدمة", "A3", "double face", "black and white", "sticker"): 1080,
-    ("خدمة", "A3", "double face", "black and white", "double glossy"): 1260,
-    ("خدمة", "A3", "double face", "colorful", "normal"): 900,
-    ("خدمة", "A3", "double face", "colorful", "glossy"): 1800,
-    ("خدمة", "A3", "double face", "colorful", "sticker"): 2700,
-    ("خدمة", "A3", "double face", "colorful", "double glossy"): 3150,
-
-    ("خدمة", "A3+", "one face", "black and white", "normal"): 250,
-    ("خدمة", "A3+", "one face", "black and white", "glossy"): 500,
-    ("خدمة", "A3+", "one face", "black and white", "sticker"): 750,
-    ("خدمة", "A3+", "one face", "black and white", "double glossy"): 850,
-    ("خدمة", "A3+", "one face", "colorful", "normal"): 625,
-    ("خدمة", "A3+", "one face", "colorful", "glossy"): 1250,
-    ("خدمة", "A3+", "one face", "colorful", "sticker"): 1875,
-    ("خدمة", "A3+", "one face", "colorful", "double glossy"): 2125,
-    ("خدمة", "A3+", "double face", "black and white", "normal"): 450,
-    ("خدمة", "A3+", "double face", "black and white", "glossy"): 900,
-    ("خدمة", "A3+", "double face", "black and white", "sticker"): 1350,
-    ("خدمة", "A3+", "double face", "black and white", "double glossy"): 1530,
-    ("خدمة", "A3+", "double face", "colorful", "normal"): 1125,
-    ("خدمة", "A3+", "double face", "colorful", "glossy"): 2250,
-    ("خدمة", "A3+", "double face", "colorful", "sticker"): 3375,
-    ("خدمة", "A3+", "double face", "colorful", "double glossy"): 3825,
-
-    ("كتب", "A4", "one face", "black and white", "normal"): 125,
-    ("كتب", "A4", "one face", "black and white", "glossy"): 250,
-    ("كتب", "A4", "one face", "black and white", "sticker"): 375,
-    ("كتب", "A4", "one face", "black and white", "double glossy"): 438,
-    ("كتب", "A4", "one face", "colorful", "normal"): 313,
-    ("كتب", "A4", "one face", "colorful", "glossy"): 625,
-    ("كتب", "A4", "one face", "colorful", "sticker"): 938,
-    ("كتب", "A4", "one face", "colorful", "double glossy"): 1094,
-    ("كتب", "A4", "double face", "black and white", "normal"): 225,
-    ("كتب", "A4", "double face", "black and white", "glossy"): 450,
-    ("كتب", "A4", "double face", "black and white", "sticker"): 675,
-    ("كتب", "A4", "double face", "black and white", "double glossy"): 788,
-    ("كتب", "A4", "double face", "colorful", "normal"): 563,
-    ("كتب", "A4", "double face", "colorful", "glossy"): 1125,
-    ("كتب", "A4", "double face", "colorful", "sticker"): 1688,
-    ("كتب", "A4", "double face", "colorful", "double glossy"): 1969,
-
-    ("كتب", "A3", "one face", "black and white", "normal"): 250,
-    ("كتب", "A3", "one face", "black and white", "glossy"): 500,
-    ("كتب", "A3", "one face", "black and white", "sticker"): 750,
-    ("كتب", "A3", "one face", "black and white", "double glossy"): 875,
-    ("كتب", "A3", "one face", "colorful", "normal"): 625,
-    ("كتب", "A3", "one face", "colorful", "glossy"): 1250,
-    ("كتب", "A3", "one face", "colorful", "sticker"): 1875,
-    ("كتب", "A3", "one face", "colorful", "double glossy"): 2188,
-    ("كتب", "A3", "double face", "black and white", "normal"): 450,
-    ("كتب", "A3", "double face", "black and white", "glossy"): 900,
-    ("كتب", "A3", "double face", "black and white", "sticker"): 1350,
-    ("كتب", "A3", "double face", "black and white", "double glossy"): 1575,
-    ("كتب", "A3", "double face", "colorful", "normal"): 1125,
-    ("كتب", "A3", "double face", "colorful", "glossy"): 2250,
-    ("كتب", "A3", "double face", "colorful", "sticker"): 3375,
-    ("كتب", "A3", "double face", "colorful", "double glossy"): 3938,
-
-    ("كتب", "A3+", "one face", "black and white", "normal"): 313,
-    ("كتب", "A3+", "one face", "black and white", "glossy"): 625,
-    ("كتب", "A3+", "one face", "black and white", "sticker"): 938,
-    ("كتب", "A3+", "one face", "black and white", "double glossy"): 1063,
-    ("كتب", "A3+", "one face", "colorful", "normal"): 781,
-    ("كتب", "A3+", "one face", "colorful", "glossy"): 1563,
-    ("كتب", "A3+", "one face", "colorful", "sticker"): 2344,
-    ("كتب", "A3+", "one face", "colorful", "double glossy"): 2656,
-    ("كتب", "A3+", "double face", "black and white", "normal"): 563,
-    ("كتب", "A3+", "double face", "black and white", "glossy"): 1125,
-    ("كتب", "A3+", "double face", "black and white", "sticker"): 1688,
-    ("كتب", "A3+", "double face", "black and white", "double glossy"): 1913,
-    ("كتب", "A3+", "double face", "colorful", "normal"): 1406,
-    ("كتب", "A3+", "double face", "colorful", "glossy"): 2813,
-    ("كتب", "A3+", "double face", "colorful", "sticker"): 4219,
-    ("كتب", "A3+", "double face", "colorful", "double glossy"): 4781,
-
-}
-
-QUANTITY_OVERRIDES: dict[tuple[str, str, str, str, str], float] = {
-    ("جملة", "A4", "one face", "black and white", "normal"): 3,
-    ("جملة", "A4", "one face", "black and white", "glossy"): 8,
-    ("جملة", "A4", "one face", "black and white", "sticker"): 10,
-    ("جملة", "A4", "one face", "black and white", "double glossy"): 25,
-    ("جملة", "A4", "one face", "colorful", "normal"): 120,
-    ("جملة", "A4", "one face", "colorful", "glossy"): 500,
-    ("جملة", "A4", "one face", "colorful", "sticker"): 2500,
-    ("جملة", "A4", "one face", "colorful", "double glossy"): 60,
-    ("جملة", "A4", "double face", "black and white", "normal"): 0,
-    ("جملة", "A4", "double face", "black and white", "glossy"): 3,
-    ("جملة", "A4", "double face", "black and white", "sticker"): 8,
-    ("جملة", "A4", "double face", "black and white", "double glossy"): 10,
-    ("جملة", "A4", "double face", "colorful", "normal"): 25,
-    ("جملة", "A4", "double face", "colorful", "glossy"): 120,
-    ("جملة", "A4", "double face", "colorful", "sticker"): 500,
-    ("جملة", "A4", "double face", "colorful", "double glossy"): 2500,
-
-    ("جملة", "A3", "one face", "black and white", "normal"): 60,
-    ("جملة", "A3", "one face", "black and white", "glossy"): 0,
-    ("جملة", "A3", "one face", "black and white", "sticker"): 3,
-    ("جملة", "A3", "one face", "black and white", "double glossy"): 8,
-    ("جملة", "A3", "one face", "colorful", "normal"): 10,
-    ("جملة", "A3", "one face", "colorful", "glossy"): 25,
-    ("جملة", "A3", "one face", "colorful", "sticker"): 120,
-    ("جملة", "A3", "one face", "colorful", "double glossy"): 500,
-    ("جملة", "A3", "double face", "black and white", "normal"): 2500,
-    ("جملة", "A3", "double face", "black and white", "glossy"): 60,
-    ("جملة", "A3", "double face", "black and white", "sticker"): 0,
-    ("جملة", "A3", "double face", "black and white", "double glossy"): 3,
-    ("جملة", "A3", "double face", "colorful", "normal"): 8,
-    ("جملة", "A3", "double face", "colorful", "glossy"): 10,
-    ("جملة", "A3", "double face", "colorful", "sticker"): 25,
-    ("جملة", "A3", "double face", "colorful", "double glossy"): 120,
-
-    ("جملة", "A3+", "one face", "black and white", "normal"): 500,
-    ("جملة", "A3+", "one face", "black and white", "glossy"): 2500,
-    ("جملة", "A3+", "one face", "black and white", "sticker"): 60,
-    ("جملة", "A3+", "one face", "black and white", "double glossy"): 0,
-    ("جملة", "A3+", "one face", "colorful", "normal"): 3,
-    ("جملة", "A3+", "one face", "colorful", "glossy"): 8,
-    ("جملة", "A3+", "one face", "colorful", "sticker"): 10,
-    ("جملة", "A3+", "one face", "colorful", "double glossy"): 25,
-    ("جملة", "A3+", "double face", "black and white", "normal"): 120,
-    ("جملة", "A3+", "double face", "black and white", "glossy"): 500,
-    ("جملة", "A3+", "double face", "black and white", "sticker"): 2500,
-    ("جملة", "A3+", "double face", "black and white", "double glossy"): 60,
-    ("جملة", "A3+", "double face", "colorful", "normal"): 0,
-    ("جملة", "A3+", "double face", "colorful", "glossy"): 3,
-    ("جملة", "A3+", "double face", "colorful", "sticker"): 8,
-    ("جملة", "A3+", "double face", "colorful", "double glossy"): 10,
-
-    ("خدمة", "A4", "one face", "black and white", "normal"): 25,
-    ("خدمة", "A4", "one face", "black and white", "glossy"): 120,
-    ("خدمة", "A4", "one face", "black and white", "sticker"): 500,
-    ("خدمة", "A4", "one face", "black and white", "double glossy"): 2500,
-    ("خدمة", "A4", "one face", "colorful", "normal"): 60,
-    ("خدمة", "A4", "one face", "colorful", "glossy"): 0,
-    ("خدمة", "A4", "one face", "colorful", "sticker"): 3,
-    ("خدمة", "A4", "one face", "colorful", "double glossy"): 8,
-    ("خدمة", "A4", "double face", "black and white", "normal"): 10,
-    ("خدمة", "A4", "double face", "black and white", "glossy"): 25,
-    ("خدمة", "A4", "double face", "black and white", "sticker"): 120,
-    ("خدمة", "A4", "double face", "black and white", "double glossy"): 500,
-    ("خدمة", "A4", "double face", "colorful", "normal"): 2500,
-    ("خدمة", "A4", "double face", "colorful", "glossy"): 60,
-    ("خدمة", "A4", "double face", "colorful", "sticker"): 0,
-    ("خدمة", "A4", "double face", "colorful", "double glossy"): 3,
-
-    ("خدمة", "A3", "one face", "black and white", "normal"): 8,
-    ("خدمة", "A3", "one face", "black and white", "glossy"): 10,
-    ("خدمة", "A3", "one face", "black and white", "sticker"): 25,
-    ("خدمة", "A3", "one face", "black and white", "double glossy"): 120,
-    ("خدمة", "A3", "one face", "colorful", "normal"): 500,
-    ("خدمة", "A3", "one face", "colorful", "glossy"): 2500,
-    ("خدمة", "A3", "one face", "colorful", "sticker"): 60,
-    ("خدمة", "A3", "one face", "colorful", "double glossy"): 0,
-    ("خدمة", "A3", "double face", "black and white", "normal"): 3,
-    ("خدمة", "A3", "double face", "black and white", "glossy"): 8,
-    ("خدمة", "A3", "double face", "black and white", "sticker"): 10,
-    ("خدمة", "A3", "double face", "black and white", "double glossy"): 25,
-    ("خدمة", "A3", "double face", "colorful", "normal"): 120,
-    ("خدمة", "A3", "double face", "colorful", "glossy"): 500,
-    ("خدمة", "A3", "double face", "colorful", "sticker"): 2500,
-    ("خدمة", "A3", "double face", "colorful", "double glossy"): 60,
-
-    ("خدمة", "A3+", "one face", "black and white", "normal"): 0,
-    ("خدمة", "A3+", "one face", "black and white", "glossy"): 3,
-    ("خدمة", "A3+", "one face", "black and white", "sticker"): 8,
-    ("خدمة", "A3+", "one face", "black and white", "double glossy"): 10,
-    ("خدمة", "A3+", "one face", "colorful", "normal"): 25,
-    ("خدمة", "A3+", "one face", "colorful", "glossy"): 120,
-    ("خدمة", "A3+", "one face", "colorful", "sticker"): 500,
-    ("خدمة", "A3+", "one face", "colorful", "double glossy"): 2500,
-    ("خدمة", "A3+", "double face", "black and white", "normal"): 60,
-    ("خدمة", "A3+", "double face", "black and white", "glossy"): 0,
-    ("خدمة", "A3+", "double face", "black and white", "sticker"): 3,
-    ("خدمة", "A3+", "double face", "black and white", "double glossy"): 8,
-    ("خدمة", "A3+", "double face", "colorful", "normal"): 10,
-    ("خدمة", "A3+", "double face", "colorful", "glossy"): 25,
-    ("خدمة", "A3+", "double face", "colorful", "sticker"): 120,
-    ("خدمة", "A3+", "double face", "colorful", "double glossy"): 500,
-
-    ("كتب", "A4", "one face", "black and white", "normal"): 2500,
-    ("كتب", "A4", "one face", "black and white", "glossy"): 60,
-    ("كتب", "A4", "one face", "black and white", "sticker"): 0,
-    ("كتب", "A4", "one face", "black and white", "double glossy"): 3,
-    ("كتب", "A4", "one face", "colorful", "normal"): 8,
-    ("كتب", "A4", "one face", "colorful", "glossy"): 10,
-    ("كتب", "A4", "one face", "colorful", "sticker"): 25,
-    ("كتب", "A4", "one face", "colorful", "double glossy"): 120,
-    ("كتب", "A4", "double face", "black and white", "normal"): 500,
-    ("كتب", "A4", "double face", "black and white", "glossy"): 2500,
-    ("كتب", "A4", "double face", "black and white", "sticker"): 60,
-    ("كتب", "A4", "double face", "black and white", "double glossy"): 0,
-    ("كتب", "A4", "double face", "colorful", "normal"): 3,
-    ("كتب", "A4", "double face", "colorful", "glossy"): 8,
-    ("كتب", "A4", "double face", "colorful", "sticker"): 10,
-    ("كتب", "A4", "double face", "colorful", "double glossy"): 25,
-
-    ("كتب", "A3", "one face", "black and white", "normal"): 120,
-    ("كتب", "A3", "one face", "black and white", "glossy"): 500,
-    ("كتب", "A3", "one face", "black and white", "sticker"): 2500,
-    ("كتب", "A3", "one face", "black and white", "double glossy"): 60,
-    ("كتب", "A3", "one face", "colorful", "normal"): 0,
-    ("كتب", "A3", "one face", "colorful", "glossy"): 3,
-    ("كتب", "A3", "one face", "colorful", "sticker"): 8,
-    ("كتب", "A3", "one face", "colorful", "double glossy"): 10,
-    ("كتب", "A3", "double face", "black and white", "normal"): 25,
-    ("كتب", "A3", "double face", "black and white", "glossy"): 120,
-    ("كتب", "A3", "double face", "black and white", "sticker"): 500,
-    ("كتب", "A3", "double face", "black and white", "double glossy"): 2500,
-    ("كتب", "A3", "double face", "colorful", "normal"): 60,
-    ("كتب", "A3", "double face", "colorful", "glossy"): 0,
-    ("كتب", "A3", "double face", "colorful", "sticker"): 3,
-    ("كتب", "A3", "double face", "colorful", "double glossy"): 8,
-
-    ("كتب", "A3+", "one face", "black and white", "normal"): 10,
-    ("كتب", "A3+", "one face", "black and white", "glossy"): 25,
-    ("كتب", "A3+", "one face", "black and white", "sticker"): 120,
-    ("كتب", "A3+", "one face", "black and white", "double glossy"): 500,
-    ("كتب", "A3+", "one face", "colorful", "normal"): 2500,
-    ("كتب", "A3+", "one face", "colorful", "glossy"): 60,
-    ("كتب", "A3+", "one face", "colorful", "sticker"): 0,
-    ("كتب", "A3+", "one face", "colorful", "double glossy"): 3,
-    ("كتب", "A3+", "double face", "black and white", "normal"): 8,
-    ("كتب", "A3+", "double face", "black and white", "glossy"): 10,
-    ("كتب", "A3+", "double face", "black and white", "sticker"): 25,
-    ("كتب", "A3+", "double face", "black and white", "double glossy"): 120,
-    ("كتب", "A3+", "double face", "colorful", "normal"): 500,
-    ("كتب", "A3+", "double face", "colorful", "glossy"): 2500,
-    ("كتب", "A3+", "double face", "colorful", "sticker"): 60,
-    ("كتب", "A3+", "double face", "colorful", "double glossy"): 0,
-
-}
-
-PRODUCT_COLORS = {
-    "A4":  {"normal": "#1F6AA5", "glossy": "#2E86C1", "sticker": "#154B7A", "double glossy": "#3498DB"},
-    "A3":  {"normal": "#1E8449", "glossy": "#239B56", "sticker": "#145A32", "double glossy": "#27AE60"},
-    "A3+": {"normal": "#7D3C98", "glossy": "#8E44AD", "sticker": "#5B2C6F", "double glossy": "#A569BD"},
-}
-
-NAME_TEMPLATE = "{category} | {paper} {size} - {face} - {color}"
-# =============================================================================
+SEED_CATALOG_FLAG = "--seed-print-catalog-once"
+SEED_MARKER_KEY = "seed_print_catalog_v1"
+SEED_LOCK_NAME = "myshop_catalog_seed_v1"
+SEED_LOCK_TIMEOUT_SECONDS = 10
+SEED_MODE = SEED_CATALOG_FLAG in sys.argv
 
 
-def _money(x: float) -> int:
-    return int(x + 0.5)            # round half up
+def register_fonts() -> None:
+    """Register Amiri for PDF reports in source and PyInstaller builds."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
 
-
-def _find_section(name, parent_id):
-    row = svc._fetch_one(
-        "SELECT id FROM sections WHERE name=? AND COALESCE(parent_id,0)=COALESCE(?,0)",
-        (name, parent_id))
-    return int(row[0]) if row else None
-
-
-def _ensure_section(name, parent_id, sort_order, user_id) -> int:
-    existing = _find_section(name, parent_id)
-    if existing:
-        return existing
-    return svc.save_entity("sections", {
-        "name": name, "parent_id": parent_id, "sort_order": sort_order, "is_active": 1,
-    }, user_id=user_id)
-
-
-def _ensure_unit(user_id):
-    if not UNIT_NAME:
-        return None
-    row = svc._fetch_one("SELECT id FROM units WHERE name=?", (UNIT_NAME,))
-    if row:
-        return int(row[0])
-    return svc.save_entity("units", {"name": UNIT_NAME, "is_active": 1}, user_id=user_id)
-
-
-def _slug(text: str) -> str:
-    return "".join(ch if ch.isalnum() or ch == "+" else "-" for ch in text.upper()).strip("-")
-
-
-def seed_print_catalog(username: str = "admin", warehouse_id: int | None = None) -> dict:
-    user_id = svc.get_username_id(username)
-    if warehouse_id is None:
-        row = svc._fetch_one(
-            "SELECT id FROM warehouses WHERE is_active=1 ORDER BY is_default DESC, id LIMIT 1")
-        warehouse_id = int(row[0]) if row else None
-    if warehouse_id is None:
-        print("WARNING: no active warehouse - opening stock will be skipped.")
-
-    unit_id = _ensure_unit(user_id)
-    created = skipped = stocked = 0
-    index = 0                                   # running product counter for mock cycle
-
-    for cat_idx, cat in enumerate(CATEGORY, start=1):
-        cat_id = _ensure_section(cat, None, cat_idx, user_id)
-        for s_idx, size in enumerate(SIZES, start=1):
-            size_id = _ensure_section(size, cat_id, s_idx, user_id)
-            for f_idx, face in enumerate(FACES, start=1):
-                face_id = _ensure_section(face, size_id, f_idx, user_id)
-                for c_idx, color in enumerate(COLOR_MODES, start=1):
-                    leaf_id = _ensure_section(color, face_id, c_idx, user_id)
-                    for paper in PAPERS:
-                        key = (cat, size, face, color, paper)
-                        index += 1
-                        sku = "-".join(_slug(x) for x in key)
-                        if svc._fetch_one("SELECT id FROM products WHERE sku=?", (sku,)):
-                            skipped += 1
-                            continue
-
-                        mult = FACE_MULTIPLIER[face] * COLOR_MULTIPLIER[color]
-                        cat_mult = CATEGORY_SELL_MULTIPLIER.get(cat, 1.0)
-                        sell = SELL_PRICE_OVERRIDES.get(
-                            key, _money(BASE_SELL_PRICE[size][paper] * mult * cat_mult))
-                        cost = _money(BASE_COST_PRICE[size][paper] * mult)
-
-                        track = CATEGORY_TRACK_STOCK.get(cat, 1)
-                        if not track:
-                            qty = 0
-                        elif key in QUANTITY_OVERRIDES:
-                            qty = QUANTITY_OVERRIDES[key]
-                        elif USE_MOCK_DATA:
-                            qty = MOCK_QUANTITY_CYCLE[index % len(MOCK_QUANTITY_CYCLE)]
-                        else:
-                            qty = DEFAULT_QUANTITY
-
-                        product_id = svc.save_entity("products", {
-                            "sku": sku,
-                            "name": NAME_TEMPLATE.format(category=cat, paper=paper, size=size,
-                                                         face=face, color=color),
-                            "section_id": leaf_id,
-                            "unit_id": unit_id,
-                            "color": PRODUCT_COLORS[size][paper],
-                            "cost_price": cost,
-                            "sell_price": sell,
-                            "min_quantity": MIN_QUANTITY,
-                            "track_stock": track,
-                            "is_active": 1,
-                        }, user_id=user_id)
-
-                        if qty and warehouse_id:
-                            svc.add_stock_adjustment(product_id, warehouse_id, qty, "OPENING",
-                                                     cost, user_id, "Opening stock (catalog seed)")
-                            stocked += 1
-                        created += 1
-
-    return {"created": created, "skipped": skipped, "with_stock": stocked}
-
-print(seed_print_catalog())
-
-root = BaseWindow("Log In")
-
-if first_password:
-    messagebox.showinfo(
-        "First run",
-        f"Admin account created.\n\nUsername: admin\nPassword: {first_password}\n\n"
-        "Write it down now. You will be asked to change it at first login."
+    # Prefer a font shipped beside the executable/source, then fall back to
+    # PyInstaller's bundled resource directory (when running a frozen build).
+    app_dir = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent
     )
+    candidates = [app_dir / "Amiri-Regular.ttf"]
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        candidates.append(Path(bundle_dir) / "Amiri-Regular.ttf")
+
+    font_path = next((path for path in candidates if path.is_file()), None)
+    if font_path is None:
+        searched = "\n".join(str(path) for path in candidates)
+        raise FileNotFoundError(
+            "Required report font Amiri-Regular.ttf was not found. Searched:\n"
+            f"{searched}"
+        )
+
+    if not pdfmetrics.getRegisteredFontNames() or "Amiri" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("Amiri", str(font_path)))
 
 
-go_login(root)
-root.mainloop()
+def run_catalog_seed_once() -> None:
+    """Run the existing Services catalog seeder once, without opening the GUI.
+
+    A persistent marker prevents a successful seed from running again. The
+    'running' state deliberately blocks silent retries after an interrupted or
+    failed seed, because the current seeder skips existing SKUs and cannot
+    guarantee repair of partially seeded opening stock.
+    """
+    # Lazy imports keep UI/reporting dependencies out of seed-only mode.
+    from Services import admin_service as admin_svc
+    from Services.seed_catalog import seed_print_catalog
+
+    conn = db.connect()
+    cursor = None
+    lock_acquired = False
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT GET_LOCK(%s, %s)",
+            (SEED_LOCK_NAME, SEED_LOCK_TIMEOUT_SECONDS),
+        )
+        lock_row = cursor.fetchone()
+        if lock_row is None or lock_row[0] != 1:
+            raise RuntimeError(
+                "تعذر الحصول على قفل تجهيز الكتالوج. قد تكون عملية تجهيز أخرى قيد التشغيل."
+            )
+        lock_acquired = True
+
+        marker_row = cursor.execute(
+            "SELECT value FROM settings WHERE `key` = %s LIMIT 1",
+            (SEED_MARKER_KEY,),
+        ).fetchone()
+        marker_value = str(marker_row[0]) if marker_row and marker_row[0] is not None else None
+
+        if marker_value == "completed":
+            print("Catalog seed has already completed. No changes were made.")
+            return
+        if marker_value == "running":
+            raise RuntimeError(
+                "يوجد تسجيل سابق بأن تجهيز الكتالوج بدأ ولم يكتمل. "
+                "لم تتم إعادة التشغيل تلقائيًا لتجنب تخطي منتجات قد تكون بلا مخزون افتتاحي. "
+                "افحص المنتجات وحركات المخزون أولًا، ثم عالج المفتاح "
+                f"{SEED_MARKER_KEY!r} يدويًا إذا لزم الأمر."
+            )
+
+        # The user asked to run this after the normal application has created
+        # the initial administrator. The seeder writes its audit entries as admin.
+        admin_id = admin_svc.get_username_id("admin")
+        if admin_id is None:
+            raise RuntimeError(
+                "لم يتم العثور على حساب admin نشط. افتح التطبيق بصورة طبيعية "
+                "وأنشئ حساب المدير قبل تشغيل ملف تجهيز الكتالوج."
+            )
+
+        # Persist 'running' before creating records so interrupted runs are
+        # detectable. The DB layer uses autocommit=True for this connection.
+        cursor.execute(
+            """
+            INSERT INTO settings (`key`, `value`)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE `value` = VALUES(`value`),
+                                    updated_at = CURRENT_TIMESTAMP
+            """,
+            (SEED_MARKER_KEY, "running"),
+        )
+
+        result = seed_print_catalog(username="admin")
+
+        cursor.execute(
+            """
+            INSERT INTO settings (`key`, `value`)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE `value` = VALUES(`value`),
+                                    updated_at = CURRENT_TIMESTAMP
+            """,
+            (SEED_MARKER_KEY, "completed"),
+        )
+
+        print("Catalog seed completed successfully.")
+        print(f"Created products: {result.get('created', 0)}")
+        print(f"Skipped existing products: {result.get('skipped', 0)}")
+        print(f"Products with opening stock: {result.get('with_stock', 0)}")
+
+    finally:
+        try:
+            if lock_acquired and cursor is not None:
+                cursor.execute("SELECT RELEASE_LOCK(%s)", (SEED_LOCK_NAME,))
+                cursor.fetchone()
+        finally:
+            if cursor is not None:
+                cursor.close()
+            conn.close()
+
+
+def _seed_log_path() -> Path:
+    app_dir = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent
+    )
+    return app_dir / "seed_print_catalog_once.log"
+
+
+def _configure_seed_logging() -> None:
+    """Write seed-mode diagnostics to a file, including for --windowed EXEs."""
+    log_path = _seed_log_path()
+    stream = log_path.open("w", encoding="utf-8", buffering=1)
+    sys.stdout = stream
+    sys.stderr = stream
+    print(f"MyShop catalog seed log: {log_path}")
+
+
+def _show_startup_error(title: str, exc: BaseException) -> None:
+    if SEED_MODE:
+        print(f"{title}: {exc}", file=sys.stderr, flush=True)
+    else:
+        messagebox.showerror(title, str(exc))
+
+def _copy_to_clipboard(text: str) -> str | None:
+    """Return None on success, otherwise a readable error."""
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+def main() -> None:
+    if SEED_MODE:
+        try:
+            _configure_seed_logging()
+        except OSError as exc:
+            print(f"Could not create seed log file: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+
+    # Both normal startup and seed-only mode need the schema initialized.
+    try:
+        db.initialize()
+    except (DatabaseError, MigrationError, KeyStoreError, RuntimeError, OSError) as exc:
+        _show_startup_error("Database error", exc)
+        raise SystemExit(1) from exc
+
+    if SEED_MODE:
+        try:
+            run_catalog_seed_once()
+        except Exception as exc:
+            print(f"Catalog seed failed: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        return
+
+    try:
+        register_fonts()
+        first_password = ensure_first_admin()
+    except (DatabaseError, MigrationError, KeyStoreError, RuntimeError, OSError) as exc:
+        _show_startup_error("Startup error", exc)
+        raise SystemExit(1) from exc
+
+    if first_password:
+        copy_error = _copy_to_clipboard(first_password)
+        clip_note = (
+            "تم نسخ كلمة المرور إلى الحافظة."
+            if copy_error is None
+            else f"تعذر النسخ إلى الحافظة:\n{copy_error}"
+        )
+        messagebox.showinfo(
+            "First run",
+            "تم إنشاء حساب المدير بنجاح.\n\n"
+            "Username: admin\n"
+            f"Password: {first_password}\n\n"
+            "احتفظ بكلمة المرور؛ سيُطلب منك تغييرها عند أول تسجيل دخول.",
+        )
+    
+    from UI.basewindow import BaseWindow
+    from UI.router import go_login
+
+    root = BaseWindow("Log In")
+    go_login(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

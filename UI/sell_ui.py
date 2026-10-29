@@ -9,8 +9,8 @@ import subprocess
 import sys
 import customtkinter as ctk
 from UI.rtl import fix
-
 from Services.cashier_service import (
+    add_customer_debt,          # NEW
     close_cashier_shift,
     create_cashier_return,
     create_cashier_sale,
@@ -19,12 +19,16 @@ from Services.cashier_service import (
     get_cashier_context,
     get_cashier_product_groups,
     get_cashier_products,
+    get_debt_customers,         # NEW
     get_open_shift,
     get_returnable_sales_items,
     get_username_id,
     minor_to_money,
     money_to_minor,
     open_cashier_shift,
+    pay_customer_debt,          # NEW
+    remove_customer_debt,       # NEW
+    update_customer_debt,       # NEW
 )
 
 
@@ -718,51 +722,153 @@ def build_sell_ui(parent, username):
         except Exception as exc:
             messagebox.showerror("خطأ", str(exc), parent=top)
 
-    def build_quick_access():
+    
+    quick_access_state = {
+        "warehouse_id": None,
+        "built": False,
+    }
+
+
+    def build_quick_access(force: bool = False):
+        warehouse_id = current_warehouse_id()
+
+        # Avoid destroying and recreating hundreds of widgets unnecessarily.
+        # Changing warehouses automatically triggers a rebuild.
+        if (
+            not force
+            and quick_access_state["built"]
+            and quick_access_state["warehouse_id"] == warehouse_id
+        ):
+            return
+
         for child in quick_scroll.winfo_children():
             child.destroy()
+
         try:
-            groups, ungrouped = get_cashier_product_groups(current_warehouse_id())
+            groups, ungrouped = get_cashier_product_groups(warehouse_id)
         except Exception as exc:
+            quick_access_state["built"] = False
             ctk.CTkLabel(
                 quick_scroll,
-                text=f"تعذر تحميل الأصناف: {exc}",
+                text=f"تعذر تحميل الأصناف:\n{exc}",
                 text_color="#e74c3c",
                 wraplength=220,
+                font=("Arial", 10),
             ).pack(padx=6, pady=8)
             return
 
-        sections = list(groups)
         if ungrouped:
-            sections.append(("بدون قسم", ungrouped))
-        for section_name, products in sections:
-            ctk.CTkLabel(
+            groups.append(("بدون قسم", ungrouped))
+
+        paper_labels = {
+            "normal": "عادي",
+            "glossy": "لامع",
+            "sticker": "استيكر",
+            "double glossy": "لامع مزدوج",
+        }
+        color_labels = {
+            "colorful": "ألوان",
+            "black and white": "أبيض/أسود",
+        }
+
+        def compact_product_label(product):
+            full_name = str(product[1] or "")
+            path = str(product[12] or "") if len(product) > 12 else ""
+            parts = [part.strip() for part in path.split(" / ") if part.strip()]
+
+            # The seed format is:
+            # "category | paper size - face - color"
+            details = (
+                full_name.split("|", 1)[1].strip()
+                if "|" in full_name
+                else full_name
+            )
+
+            if len(parts) >= 2:
+                details = details.replace(f" {parts[1]}", "", 1)
+
+            if len(parts) >= 3:
+                details = details.replace(f" - {parts[2]}", "", 1)
+
+            if len(parts) >= 4:
+                details = details.removesuffix(f" - {parts[3]}")
+
+            paper = " ".join(details.strip(" -").split())
+            paper_label = paper_labels.get(paper.casefold(), paper or "منتج")
+
+            mode = parts[3].casefold() if len(parts) >= 4 else ""
+            mode_label = color_labels.get(mode, mode)
+
+            if mode_label:
+                return f"{paper_label} · {mode_label}"
+
+            return paper_label
+
+        for group_index, (section_name, products) in enumerate(groups):
+            group_frame = ctk.CTkFrame(
                 quick_scroll,
+                fg_color="transparent",
+                corner_radius=8,
+            )
+            group_frame.pack(fill=X, padx=3, pady=(4, 2))
+
+            ctk.CTkLabel(
+                group_frame,
                 text=section_name,
                 text_color=text,
-                font=("Arial", 14, "bold"),
+                font=("Arial", 11, "bold"),
                 anchor="e",
-            ).pack(fill=X, padx=5, pady=(10, 3))
-            for product in products:
+            ).pack(fill=X, padx=4, pady=(5, 3))
 
-                btn_text = f"{product[1]}\n{minor_to_money(product[4])}"
+            products_frame = ctk.CTkFrame(
+                group_frame,
+                fg_color="transparent",
+            )
+            products_frame.pack(fill=X, padx=1, pady=(0, 4))
+
+            products_frame.grid_columnconfigure(0, weight=1)
+            products_frame.grid_columnconfigure(1, weight=1)
+
+            for index, product in enumerate(products):
+                button_text = (
+                    f"{compact_product_label(product)}\n"
+                    f"{minor_to_money(product[4])}"
+                )
 
                 color = _valid_hex(product[11]) if len(product) > 11 else None
 
-                ctk.CTkButton(
-                    quick_scroll,
-                    text=btn_text,
-                    height=54,
-                    anchor="e",
+                button = ctk.CTkButton(
+                    products_frame,
+                    text=button_text,
+                    font=("Arial", 10),
+                    height=44,
+                    corner_radius=7,
+                    anchor="center",
                     fg_color=color or "#1f3b4d",
                     hover_color=_shade(color, 0.85) if color else "#2c526a",
                     text_color=_text_on(color) if color else "#ffffff",
                     command=lambda p=product: ask_product_quantity(p),
-                ).pack(fill=X, padx=4, pady=3)
-        if not groups and not ungrouped:
+                )
+
+                button.grid(
+                    row=index // 2,
+                    column=index % 2,
+                    sticky="ew",
+                    padx=2,
+                    pady=2,
+                )
+
+        if not groups:
             ctk.CTkLabel(
-                quick_scroll, text="لا توجد منتجات نشطة", text_color=muted
+                quick_scroll,
+                text="لا توجد منتجات نشطة",
+                text_color=muted,
+                font=("Arial", 10),
             ).pack(pady=12)
+
+        quick_access_state["warehouse_id"] = warehouse_id
+        quick_access_state["built"] = True
+
 
     def refresh_shift_ui():
         try:
@@ -1105,6 +1211,316 @@ def build_sell_ui(parent, username):
         except Exception as exc:
             messagebox.showerror("خطأ", str(exc), parent=top)
 
+
+    debt_window = {"win": None}
+ 
+    def show_debt_customers():
+        old = debt_window["win"]
+        if old is not None and old.winfo_exists():
+            old.lift()
+            old.focus_force()
+            return
+ 
+        win = ctk.CTkToplevel(parent)
+        debt_window["win"] = win
+        win.title("العملاء المدينون")
+        win.geometry("900x590")
+        win.transient(top)
+ 
+        search_debt_var = StringVar()
+        summary_var = StringVar(value="")
+        debtors: dict[int, tuple] = {}   # customer_id -> (id, name, debt_minor)
+ 
+        # ---------------- header: action buttons ----------------
+        header = ctk.CTkFrame(win, fg_color=card, corner_radius=12)
+        header.pack(fill=X, padx=12, pady=(12, 6))
+        ctk.CTkLabel(
+            header, text="العملاء المدينون", font=("Arial", 20, "bold"), text_color=text
+        ).pack(side=RIGHT, padx=14, pady=10)
+        pay_btn = ctk.CTkButton(
+            header, text="تسديد الدين", width=105,
+            fg_color="#1f7a4d", hover_color="#17613d",
+        )
+        pay_btn.pack(side=LEFT, padx=(10, 3), pady=10)
+        update_btn = ctk.CTkButton(header, text="تعديل الدين", width=105)
+        update_btn.pack(side=LEFT, padx=3, pady=10)
+        remove_btn = ctk.CTkButton(
+            header, text="حذف الدين", width=105,
+            fg_color="#a93226", hover_color="#922b21",
+        )
+        remove_btn.pack(side=LEFT, padx=3, pady=10)
+        add_btn = ctk.CTkButton(
+            header, text="إضافة دين", width=105,
+            fg_color="#b9770e", hover_color="#9a630b",
+        )
+        add_btn.pack(side=LEFT, padx=3, pady=10)
+ 
+        # ---------------- search + summary ----------------
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(fill=X, padx=12, pady=(0, 6))
+        search_entry_debt = ctk.CTkEntry(
+            bar, textvariable=search_debt_var, justify="right", height=36,
+            placeholder_text="ابحث باسم العميل أو رقم الهاتف",
+        )
+        search_entry_debt.pack(side=RIGHT, fill=X, expand=True, padx=(0, 6))
+        ctk.CTkButton(
+            bar, text="تحديث", width=80, height=36,
+            fg_color="#555555", hover_color="#444444",
+            command=lambda: refresh(),
+        ).pack(side=LEFT)
+ 
+        # ---------------- table ----------------
+        debt_columns = ("id", "name", "phone", "debt")
+        debt_tree = ttk.Treeview(
+            win, columns=debt_columns, show="headings", style="Cashier.Treeview",
+            selectmode="browse", displaycolumns=debt_columns[::-1],
+        )
+        for col, title, width in (
+            ("id", "الرقم", 70),
+            ("name", "العميل", 280),
+            ("phone", "الهاتف", 160),
+            ("debt", "الدين الحالي", 160),
+        ):
+            debt_tree.heading(col, text=title)
+            debt_tree.column(col, width=width, anchor=CENTER, stretch=(col == "name"))
+        debt_tree.pack(fill=BOTH, expand=True, padx=12, pady=(0, 6))
+        ctk.CTkLabel(
+            win, textvariable=summary_var, text_color=muted, font=("Arial", 13, "bold")
+        ).pack(anchor="e", padx=14, pady=(0, 10))
+ 
+        # ---------------- helpers ----------------
+        def refresh(_event=None):
+            try:
+                rows = get_debt_customers()
+            except Exception as exc:
+                messagebox.showerror("خطأ", f"تعذر تحميل العملاء المدينين:\n{exc}", parent=win)
+                return
+            needle = search_debt_var.get().strip().casefold()
+            debtors.clear()
+            debt_tree.delete(*debt_tree.get_children())
+            total = 0
+            for cid, name, phone, debt in rows:
+                debtors[cid] = (cid, name, debt)
+                total += debt
+                if needle and needle not in f"{name} {phone}".casefold():
+                    continue
+                debt_tree.insert(
+                    "", END, iid=str(cid),
+                    values=(cid, name, phone, minor_to_money(debt)),
+                )
+            summary_var.set(
+                f"إجمالي الديون: {minor_to_money(total)}   |   عدد العملاء المدينين: {len(rows)}"
+            )
+ 
+        def selected_debtor():
+            sel = debt_tree.selection()
+            if not sel:
+                messagebox.showwarning("اختر عميلًا", "اختر عميلًا من القائمة أولًا.", parent=win)
+                return None
+            return debtors.get(int(sel[0]))
+ 
+        def current_shift_id():
+            row = current_shift["row"]
+            return int(row[0]) if row else None
+ 
+        def form_dialog(title, fields, on_submit, submit_text="تأكيد"):
+            """fields: (key, label, 'entry'|'combo', default, values).
+            on_submit(values) may return a message to show after success."""
+            dlg = ctk.CTkToplevel(win)
+            dlg.title(title)
+            dlg.geometry(f"410x{150 + 78 * len(fields)}")
+            dlg.resizable(False, False)
+            dlg.transient(win)
+            dlg.grab_set()
+            variables = {}
+            first_entry = None
+            for key, label, kind, default, values in fields:
+                ctk.CTkLabel(
+                    dlg, text=label, anchor="e", justify="right",
+                    font=("Arial", 12, "bold"), wraplength=370,
+                ).pack(fill=X, padx=16, pady=(12, 2))
+                var = StringVar(value=default)
+                if kind == "combo":
+                    ctk.CTkComboBox(
+                        dlg, variable=var, values=list(values), state="readonly", height=34
+                    ).pack(fill=X, padx=16)
+                else:
+                    entry = ctk.CTkEntry(dlg, textvariable=var, justify="right", height=34)
+                    entry.pack(fill=X, padx=16)
+                    if first_entry is None:
+                        first_entry = entry
+                variables[key] = var
+ 
+            def submit(_event=None):
+                try:
+                    message = on_submit({k: v.get() for k, v in variables.items()})
+                except Exception as exc:
+                    messagebox.showerror("تعذر تنفيذ العملية", str(exc), parent=dlg)
+                    return
+                dlg.grab_release()
+                dlg.destroy()
+                refresh()
+                if message:
+                    messagebox.showinfo(title, message, parent=win)
+ 
+            row = ctk.CTkFrame(dlg, fg_color="transparent")
+            row.pack(fill=X, padx=16, pady=16)
+            ctk.CTkButton(row, text=submit_text, command=submit).pack(side=RIGHT, padx=(4, 0))
+            ctk.CTkButton(
+                row, text="إلغاء", fg_color="#555555", hover_color="#444444",
+                command=dlg.destroy,
+            ).pack(side=LEFT, padx=(0, 4))
+            dlg.bind("<Escape>", lambda _e: dlg.destroy())
+            if first_entry is not None:
+                dlg.bind("<Return>", submit)
+                dlg.after(100, first_entry.focus_set)
+ 
+        # ---------------- actions ----------------
+        def pay_selected():
+            picked = selected_debtor()
+            if not picked:
+                return
+            cid, name, debt = picked
+            if current_shift_id() is None:
+                messagebox.showwarning(
+                    "لا توجد وردية مفتوحة", "ابدأ وردية الكاشير قبل تسديد الدين.", parent=win
+                )
+                return
+ 
+            def submit(v):
+                method_id = method_labels.get(v["method"])
+                if method_id is None:
+                    raise ValueError("اختر طريقة دفع")
+                amount = money_to_minor(v["amount"] or "0")
+                result = pay_customer_debt(
+                    cid, method_id, cashier_id, current_shift_id(), amount
+                )
+                return (
+                    f"تم تسجيل التسديد {result['number']}\n"
+                    f"المبلغ: {minor_to_money(result['amount'])}\n"
+                    f"المتبقي على العميل: {minor_to_money(result['remaining_debt'])}"
+                )
+ 
+            form_dialog(
+                f"تسديد دين: {name}",
+                [
+                    ("method", "طريقة الدفع", "combo", method_var.get(), list(method_labels)),
+                    ("amount", f"المبلغ المسدد (الدين الحالي {minor_to_money(debt)})",
+                     "entry", minor_to_money(debt), None),
+                ],
+                submit, "تسديد",
+            )
+ 
+        def update_selected():
+            picked = selected_debtor()
+            if not picked:
+                return
+            cid, name, debt = picked
+ 
+            def submit(v):
+                result = update_customer_debt(
+                    cid, money_to_minor(v["new_debt"] or "0"), cashier_id,
+                    v["reason"], current_shift_id(),
+                )
+                return (
+                    f"تم تعديل الدين ({result['number']})\n"
+                    f"من {minor_to_money(result['debt_before'])} "
+                    f"إلى {minor_to_money(result['debt_after'])}"
+                )
+ 
+            form_dialog(
+                f"تعديل دين: {name}",
+                [
+                    ("new_debt", f"قيمة الدين الجديدة (الحالية {minor_to_money(debt)})",
+                     "entry", minor_to_money(debt), None),
+                    ("reason", "سبب التعديل *", "entry", "", None),
+                ],
+                submit, "حفظ التعديل",
+            )
+ 
+        def remove_selected_debt():
+            picked = selected_debtor()
+            if not picked:
+                return
+            cid, name, debt = picked
+ 
+            def submit(v):
+                amount = money_to_minor(v["amount"] or "0")
+                if not messagebox.askyesno(
+                    "تأكيد حذف الدين",
+                    f"سيتم حذف {minor_to_money(amount)} من دين العميل {name} "
+                    "دون استلام أي نقدية، وسيُسجَّل ذلك للمدير.\nهل تريد المتابعة؟",
+                    parent=win,
+                ):
+                    raise ValueError("تم إلغاء العملية")
+                result = remove_customer_debt(
+                    cid, cashier_id, v["reason"], amount, current_shift_id()
+                )
+                return (
+                    f"تم حذف الدين ({result['number']})\n"
+                    f"المتبقي على العميل: {minor_to_money(result['debt_after'])}"
+                )
+ 
+            form_dialog(
+                f"حذف دين: {name}",
+                [
+                    ("amount", f"المبلغ المراد حذفه (الدين الحالي {minor_to_money(debt)})",
+                     "entry", minor_to_money(debt), None),
+                    ("reason", "سبب الحذف *", "entry", "", None),
+                ],
+                submit, "حذف",
+            )
+ 
+        def add_debt():
+            names = [label for label, cid in customer_labels.items() if cid is not None]
+            if not names:
+                messagebox.showwarning(
+                    "لا يوجد عملاء",
+                    "الدين يُسجَّل للعملاء المسجلين فقط. أضف العميل أولًا من صفحة البيع.",
+                    parent=win,
+                )
+                return
+            preselect = names[0]
+            picked = debt_tree.selection()
+            if picked:
+                for label, cid in customer_labels.items():
+                    if cid == int(picked[0]):
+                        preselect = label
+                        break
+ 
+            def submit(v):
+                cid = customer_labels.get(v["customer"])
+                if cid is None:
+                    raise ValueError("اختر عميلًا مسجلًا؛ لا يُسجَّل دين لغير العملاء")
+                result = add_customer_debt(
+                    cid, money_to_minor(v["amount"] or "0"), cashier_id,
+                    v["reason"], current_shift_id(),
+                )
+                return (
+                    f"تمت إضافة الدين ({result['number']})\n"
+                    f"إجمالي دين العميل الآن: {minor_to_money(result['debt_after'])}"
+                )
+ 
+            form_dialog(
+                "إضافة دين",
+                [
+                    ("customer", "العميل", "combo", preselect, names),
+                    ("amount", "مبلغ الدين المضاف", "entry", "", None),
+                    ("reason", "سبب إضافة الدين *", "entry", "", None),
+                ],
+                submit, "إضافة",
+            )
+ 
+        pay_btn.configure(command=pay_selected)
+        update_btn.configure(command=update_selected)
+        remove_btn.configure(command=remove_selected_debt)
+        add_btn.configure(command=add_debt)
+        search_entry_debt.bind("<KeyRelease>", refresh)
+ 
+        refresh()
+        win.after(150, win.focus_force)
+ 
+ 
     # Bind callbacks after helper declarations.
     add_button.configure(command=search_and_add)
     search_entry.bind("<Return>", search_and_add)
@@ -1150,6 +1566,15 @@ def build_sell_ui(parent, username):
         height=36,
         fg_color="#285c8f",
         hover_color="#1f496f",
+    ).pack(fill=X, padx=12, pady=5)
+    ctk.CTkButton(
+        controls_body,
+        text=fix("اظهار قائمة الديون"),
+        command=show_debt_customers, #TO-DO
+        height=36,
+        fg_color="#285c8f",
+        hover_color="#1f496f",
+
     ).pack(fill=X, padx=12, pady=5)
     ctk.CTkLabel(
         controls_body,

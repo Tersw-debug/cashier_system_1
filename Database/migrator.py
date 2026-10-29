@@ -51,7 +51,7 @@ class Migrator:
         try:
             m.apply(c)
             c.execute(
-                "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
+                "INSERT INTO schema_migrations (version, description) VALUES (%s, %s)",
                 (m.VERSION, m.DESCRIPTION)
             )
         except Exception as e:

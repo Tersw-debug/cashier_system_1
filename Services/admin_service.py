@@ -147,6 +147,62 @@ RESOURCE_CONFIG: dict[str, dict[str, Any]] = {
     "audit_log": {"title": "سجل التدقيق", "editable": False,
         "sql": "SELECT al.id,al.created_at,COALESCE(u.username,''),al.action,al.entity,COALESCE(al.entity_id,''),COALESCE(al.note,'') FROM audit_log al LEFT JOIN users u ON u.id=al.user_id",
         "columns": ["ID", "التاريخ", "المستخدم", "العملية", "الكيان", "معرف الكيان", "ملاحظة"], "search": ["u.username", "al.action", "al.entity", "al.note"]},
+    "debt_log": {
+            "title": "سجل حركة الديون",
+            "editable": False,
+            "sql": """
+                SELECT
+                    q.audit_id,
+                    q.created_at,
+                    q.user_id,
+                    q.username,
+                    q.action,
+                    q.entity,
+                    q.entity_id,
+                    q.old_values,
+                    q.new_values,
+                    q.note
+                FROM (
+                    SELECT
+                        a.id AS audit_id,
+                        a.created_at,
+                        a.user_id,
+                        COALESCE(u.username, '') AS username,
+                        a.action,
+                        COALESCE(a.entity, '') AS entity,
+                        COALESCE(CAST(a.entity_id AS CHAR), '') AS entity_id,
+                        COALESCE(a.old_values, '') AS old_values,
+                        COALESCE(a.new_values, '') AS new_values,
+                        COALESCE(a.note, '') AS note
+                    FROM audit_log AS a
+                    LEFT JOIN users AS u ON u.id = a.user_id
+                    WHERE a.action LIKE 'DEBT%'
+                ) AS q
+            """,
+            "columns": [
+                "معرف التدقيق",
+                "التاريخ",
+                "معرف المستخدم",
+                "اسم المستخدم",
+                "العملية",
+                "الكيان",
+                "معرف الكيان",
+                "القيم السابقة JSON",
+                "القيم الجديدة JSON",
+                "ملاحظة / سبب العملية",
+            ],
+            "search": [
+                "q.audit_id",
+                "q.user_id",
+                "q.username",
+                "q.action",
+                "q.entity",
+                "q.entity_id",
+                "q.old_values",
+                "q.new_values",
+                "q.note",
+            ],
+        },
     "doc_sequences": {"title": "ترقيم المستندات", "editable": True,
         "sql": "SELECT name,prefix,next_number,padding FROM doc_sequences", "columns": ["الاسم", "البادئة", "الرقم التالي", "عدد الخانات"], "search": ["name", "prefix"]},
     "settings": {"title": "الإعدادات", "editable": True,
@@ -192,16 +248,16 @@ def _fetch_one(sql: str, params=()):
 
 
 def _next_number(c, sequence_name: str) -> str:
-    row = c.execute("SELECT prefix,next_number,padding FROM doc_sequences WHERE name=?", (sequence_name,)).fetchone()
+    row = c.execute("SELECT prefix,next_number,padding FROM doc_sequences WHERE name=%s", (sequence_name,)).fetchone()
     if not row:
         raise ValueError(f"Missing document sequence: {sequence_name}")
     prefix, n, padding = row
-    c.execute("UPDATE doc_sequences SET next_number=? WHERE name=?", (n + 1, sequence_name))
+    c.execute("UPDATE doc_sequences SET next_number=%s WHERE name=%s", (n + 1, sequence_name))
     return f"{prefix}{int(n):0{int(padding)}d}"
 
 
 def _setting(c, key: str, default=None):
-    row = c.execute("SELECT value FROM settings WHERE `key`=?", (key,)).fetchone()
+    row = c.execute("SELECT value FROM settings WHERE `key`=%s", (key,)).fetchone()
     return row[0] if row else default
 
 
@@ -214,7 +270,7 @@ def _audit(c, user_id: int | None, action: str, entity: str, entity_id=None,
         if isinstance(value, dict):
             value = {k: v for k, v in value.items() if k not in {"password", "password_hash"}}
         return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
-    c.execute("INSERT INTO audit_log(user_id,action,entity,entity_id,old_values,new_values,note) VALUES(?,?,?,?,?,?,?)",
+    c.execute("INSERT INTO audit_log(user_id,action,entity,entity_id,old_values,new_values,note) VALUES(%s,%s,%s,%s,%s,%s,%s)",
               (user_id, action, entity, int(entity_id) if isinstance(entity_id, int) else None,
                encode(old_values), encode(new_values), note or (str(entity_id) if entity_id is not None and not isinstance(entity_id, int) else None)))
 
@@ -223,10 +279,10 @@ def _snapshot(c, resource: str, record_id):
     if resource not in RESOURCE_CONFIG:
         return None
     if resource == "settings":
-        row = c.execute("SELECT `key`,value FROM settings WHERE `key`=?", (str(record_id),)).fetchone()
+        row = c.execute("SELECT `key`,value FROM settings WHERE `key`=%s", (str(record_id),)).fetchone()
         return {"key": row[0], "value": row[1]} if row else None
     pk = "name" if resource == "doc_sequences" else "id"
-    cur = c.execute(f"SELECT * FROM {resource} WHERE {pk}=?", (record_id,))
+    cur = c.execute(f"SELECT * FROM {resource} WHERE {pk}=%s", (record_id,))
     row = cur.fetchone()
     if not row:
         return None
@@ -241,32 +297,134 @@ def _configured_account_id(c, key: str) -> int:
     code = _setting(c, key)
     if code in (None, ""):
         raise ValueError(f"إعداد الحساب غير موجود: {key}")
-    row = c.execute("SELECT id FROM accounts WHERE code=? AND is_active=1", (str(code),)).fetchone()
+    row = c.execute("SELECT id FROM accounts WHERE code=%s AND is_active=1", (str(code),)).fetchone()
     if not row:
         raise ValueError(f"الحساب ذو الكود {code} غير موجود أو غير نشط (الإعداد {key})")
     return int(row[0])
 
 
 def get_username_id(username: str) -> int | None:
-    row = _fetch_one("SELECT id FROM users WHERE LOWER(username)=LOWER(?)", (username,))
+    row = _fetch_one("SELECT id FROM users WHERE LOWER(username)=LOWER(%s)", (username,))
     return int(row[0]) if row else None
 
 
 def get_dashboard_stats() -> dict[str, Any]:
-    def scalar(sql, params=()):
-        row = _fetch_one(sql, params)
-        return row[0] if row and row[0] is not None else 0
+    """Return dashboard statistics from the MySQL database."""
+
+    def scalar(key: str, sql: str, params=()):
+        try:
+            row = _fetch_one(sql, params)
+            return row[0] if row and row[0] is not None else 0
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load dashboard statistic '{key}': {exc}"
+            ) from exc
+
     return {
-        "products": scalar("SELECT COUNT(*) FROM products WHERE is_active=1"),
-        "stock_units": scalar("SELECT COALESCE(SUM(quantity),0) FROM stock_levels"),
-        "low_stock": scalar("SELECT COUNT(*) FROM (SELECT p.id FROM products p LEFT JOIN stock_levels sl ON sl.product_id=p.id WHERE p.track_stock=1 AND p.is_active=1 GROUP BY p.id HAVING COALESCE(SUM(sl.quantity),0)<=p.min_quantity)"),
-        "customers": scalar("SELECT COUNT(*) FROM partners WHERE is_customer=1 AND is_active=1"),
-        "suppliers": scalar("SELECT COUNT(*) FROM partners WHERE is_supplier=1 AND is_active=1"),
-        "sales_today": scalar("SELECT COALESCE(SUM(CASE WHEN sale_type='SALE' THEN total ELSE -total END),0) FROM sales WHERE status='POSTED' AND date(sold_at)=date('now','localtime')"),
-        "receivables": scalar("SELECT COALESCE(SUM(balance),0) FROM v_customer_balances"),
-        "payables": scalar("SELECT COALESCE(SUM(balance),0) FROM v_supplier_balances"),
-        "employees": scalar("SELECT COUNT(*) FROM employees WHERE is_active=1"),
-        "unbalanced": scalar("SELECT COUNT(*) FROM v_unbalanced_entries"),
+        "products": scalar(
+            "products",
+            """
+            SELECT COUNT(*)
+            FROM products
+            WHERE is_active = 1
+            """,
+        ),
+
+        "stock_units": scalar(
+            "stock_units",
+            """
+            SELECT COALESCE(SUM(quantity), 0)
+            FROM stock_levels
+            """,
+        ),
+
+        "low_stock": scalar(
+            "low_stock",
+            """
+            SELECT COUNT(*)
+            FROM products AS p
+            WHERE p.track_stock = 1
+              AND p.is_active = 1
+              AND COALESCE(
+                    (
+                        SELECT SUM(sl.quantity)
+                        FROM stock_levels AS sl
+                        WHERE sl.product_id = p.id
+                    ),
+                    0
+                  ) <= p.min_quantity
+            """,
+        ),
+
+        "customers": scalar(
+            "customers",
+            """
+            SELECT COUNT(*)
+            FROM partners
+            WHERE is_customer = 1 AND is_active = 1
+            """,
+        ),
+
+        "suppliers": scalar(
+            "suppliers",
+            """
+            SELECT COUNT(*)
+            FROM partners
+            WHERE is_supplier = 1 AND is_active = 1
+            """,
+        ),
+
+        "sales_today": scalar(
+            "sales_today",
+            """
+            SELECT COALESCE(
+                SUM(
+                    CASE
+                        WHEN sale_type = 'SALE' THEN total
+                        ELSE -total
+                    END
+                ),
+                0
+            )
+            FROM sales
+            WHERE status = 'POSTED'
+              AND sold_at >= CURRENT_DATE()
+              AND sold_at < CURRENT_DATE() + INTERVAL 1 DAY
+            """,
+        ),
+
+        "receivables": scalar(
+            "receivables",
+            """
+            SELECT COALESCE(SUM(balance), 0)
+            FROM v_customer_balances
+            """,
+        ),
+
+        "payables": scalar(
+            "payables",
+            """
+            SELECT COALESCE(SUM(balance), 0)
+            FROM v_supplier_balances
+            """,
+        ),
+
+        "employees": scalar(
+            "employees",
+            """
+            SELECT COUNT(*)
+            FROM employees
+            WHERE is_active = 1
+            """,
+        ),
+
+        "unbalanced": scalar(
+            "unbalanced",
+            """
+            SELECT COUNT(*)
+            FROM v_unbalanced_entries
+            """,
+        ),
     }
 
 
@@ -274,19 +432,43 @@ def list_resource(resource: str, search: str = ""):
     cfg = RESOURCE_CONFIG.get(resource)
     if not cfg:
         raise ValueError("Unknown admin resource")
+
     sql = cfg["sql"]
     params: list[Any] = []
     searchable = cfg.get("search", [])
+
     if search.strip() and searchable:
-        sql += " WHERE " + " OR ".join(f"CAST({column} AS TEXT) LIKE ?" for column in searchable)
+        sql += " WHERE " + " OR ".join(
+            f"CAST({column} AS CHAR) LIKE %s"
+            for column in searchable
+        )
         params.extend([f"%{search.strip()}%"] * len(searchable))
-    sql += " ORDER BY 1 DESC LIMIT 2000" if resource not in {"products", "sections", "units", "tax_rates", "partners", "warehouses", "accounts", "departments", "employees", "permissions", "roles", "settings"} else " ORDER BY 1 LIMIT 2000"
+
+    ascending_resources = {
+        "products",
+        "sections",
+        "units",
+        "tax_rates",
+        "partners",
+        "warehouses",
+        "accounts",
+        "departments",
+        "employees",
+        "permissions",
+        "roles",
+        "settings",
+        "doc_sequences",
+    }
+
+    order = "ASC" if resource in ascending_resources else "DESC"
+    sql += f" ORDER BY 1 {order} LIMIT 2000"
+
     return _fetch_all(sql, params)
 
 
 def get_resource_record(resource: str, record_id: int):
     if resource == "settings":
-        row = _fetch_one("SELECT `key`,value FROM settings WHERE `key`=?", (str(record_id),))
+        row = _fetch_one("SELECT `key`,value FROM settings WHERE `key`=%s", (str(record_id),))
         if not row:
             return None
         return {"key": row[0], "value": row[1]}
@@ -308,7 +490,7 @@ def get_resource_record(resource: str, record_id: int):
         raise ValueError("This resource is read-only")
     table = resource
     pk = "key" if resource == "settings" else ("name" if resource == "doc_sequences" else "id")
-    row = _fetch_one(f"SELECT {fields} FROM {table} WHERE {pk}=?", (record_id,))
+    row = _fetch_one(f"SELECT {fields} FROM {table} WHERE {pk}=%s", (record_id,))
     return dict(zip(fields.split(","), row)) if row else None
 
 
@@ -369,23 +551,23 @@ def save_entity(resource: str, values: dict[str, Any], record_id: int | str | No
     if resource == "products" and cooked.get("sell_price") is None:
         raise ValueError("سعر البيع مطلوب")
     if resource == "products" and record_id is not None:
-        existing = _fetch_one("SELECT cost_price FROM products WHERE id=?", (record_id,))
+        existing = _fetch_one("SELECT cost_price FROM products WHERE id=%s", (record_id,))
         if existing and int(existing[0] or 0) != int(cooked.get("cost_price") or 0):
-            movement_count = _fetch_one("SELECT COUNT(*) FROM stock_movements WHERE product_id=?", (record_id,))[0]
+            movement_count = _fetch_one("SELECT COUNT(*) FROM stock_movements WHERE product_id=%s", (record_id,))[0]
             if movement_count:
                 raise ValueError("لا تعدّل تكلفة صنف له حركات مخزون؛ حدّث متوسط التكلفة عبر فاتورة شراء أو إجراء تسوية محاسبي معتمد")
     if resource == "accounts" and cooked.get("type") not in {"ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"}:
         raise ValueError("نوع الحساب غير صحيح")
     if resource == "warehouses" and record_id is not None and not cooked.get("is_default"):
-        existing_warehouse = _fetch_one("SELECT is_default FROM warehouses WHERE id=?", (record_id,))
+        existing_warehouse = _fetch_one("SELECT is_default FROM warehouses WHERE id=%s", (record_id,))
         if existing_warehouse and existing_warehouse[0]:
             raise ValueError("عيّن مخزنًا آخر كافتراضي أولًا؛ يجب الاحتفاظ بمخزن افتراضي")
     if resource == "accounts" and record_id is not None:
-        existing_account = _fetch_one("SELECT code,type,is_system FROM accounts WHERE id=?", (record_id,))
+        existing_account = _fetch_one("SELECT code,type,is_system FROM accounts WHERE id=%s", (record_id,))
         if existing_account and existing_account[2] and (cooked.get("code") != existing_account[0] or cooked.get("type") != existing_account[1]):
             raise ValueError("لا يمكن تغيير كود أو نوع حساب نظامي لأنه مستخدم في إعدادات الترحيل")
     if resource == "roles" and record_id is not None:
-        existing = _fetch_one("SELECT name,is_system FROM roles WHERE id=?", (record_id,))
+        existing = _fetch_one("SELECT name,is_system FROM roles WHERE id=%s", (record_id,))
         if existing and existing[1] and cooked.get("name") != existing[0]:
             raise ValueError("لا يمكن تغيير اسم دور نظامي")
     if resource == "products":
@@ -413,14 +595,14 @@ def save_entity(resource: str, values: dict[str, Any], record_id: int | str | No
 def _save_row(c, resource, cooked, record_id):
     if resource == "settings":
         key = cooked.get("key")
-        c.execute("INSERT INTO settings(`key`,value) VALUES(?,?) ON DUPLICATE KEY UPDATE value=VALUES(value),updated_at=CURRENT_TIMESTAMP", (key, cooked.get("value")))
+        c.execute("INSERT INTO settings(`key`,value) VALUES(%s,%s) ON DUPLICATE KEY UPDATE value=VALUES(value),updated_at=CURRENT_TIMESTAMP", (key, cooked.get("value")))
         return key
     if resource == "doc_sequences":
         name = cooked.get("name")
         if record_id is None:
-            c.execute("INSERT INTO doc_sequences(name,prefix,next_number,padding) VALUES(?,?,?,?)", (name, cooked.get("prefix") or "", cooked.get("next_number",1), cooked.get("padding",6)))
+            c.execute("INSERT INTO doc_sequences(name,prefix,next_number,padding) VALUES(%s,%s,%s,%s)", (name, cooked.get("prefix") or "", cooked.get("next_number",1), cooked.get("padding",6)))
             return name
-        c.execute("UPDATE doc_sequences SET prefix=?,next_number=?,padding=? WHERE name=?", (cooked.get("prefix") or "", cooked.get("next_number",1), cooked.get("padding",6), record_id))
+        c.execute("UPDATE doc_sequences SET prefix=%s,next_number=%s,padding=%s WHERE name=%s", (cooked.get("prefix") or "", cooked.get("next_number",1), cooked.get("padding",6), record_id))
         return record_id
     if resource == "users":
         password = str(cooked.pop("password", "") or "").strip()
@@ -431,29 +613,29 @@ def _save_row(c, resource, cooked, record_id):
         else:
             cooked.pop("password_hash", None)
         if record_id is not None:
-            old = c.execute("SELECT is_system FROM roles WHERE id=?", (cooked.get("role_id"),)).fetchone()
+            old = c.execute("SELECT is_system FROM roles WHERE id=%s", (cooked.get("role_id"),)).fetchone()
             if not old:
                 raise ValueError("الدور المحدد غير موجود")
         if record_id is None:
             names = list(cooked)
-            c.execute(f"INSERT INTO users ({','.join(names)}) VALUES ({','.join('?' for _ in names)})", [cooked[n] for n in names])
+            c.execute(f"INSERT INTO users ({','.join(names)}) VALUES ({','.join('%s' for _ in names)})", [cooked[n] for n in names])
             return c.lastrowid
         names = list(cooked)
-        c.execute(f"UPDATE users SET {','.join(n+'=?' for n in names)} WHERE id=?", [cooked[n] for n in names] + [record_id])
+        c.execute(f"UPDATE users SET {','.join(n+'=%s' for n in names)} WHERE id=%s", [cooked[n] for n in names] + [record_id])
         return record_id
     if resource == "accounts" and record_id is not None:
-        existing = c.execute("SELECT is_system FROM accounts WHERE id=?", (record_id,)).fetchone()
+        existing = c.execute("SELECT is_system FROM accounts WHERE id=%s", (record_id,)).fetchone()
         if existing and existing[0]:
             # System account codes/types are stable because services and settings refer to them.
-            current = c.execute("SELECT code,type FROM accounts WHERE id=?", (record_id,)).fetchone()
+            current = c.execute("SELECT code,type FROM accounts WHERE id=%s", (record_id,)).fetchone()
             cooked.pop("code", None)
             cooked.pop("type", None)
     if record_id is None:
         names = list(cooked)
-        c.execute(f"INSERT INTO {resource} ({','.join(names)}) VALUES ({','.join('?' for _ in names)})", [cooked[n] for n in names])
+        c.execute(f"INSERT INTO {resource} ({','.join(names)}) VALUES ({','.join('%s' for _ in names)})", [cooked[n] for n in names])
         return c.lastrowid
     names = list(cooked)
-    c.execute(f"UPDATE {resource} SET {','.join(n+'=?' for n in names)} WHERE id=?", [cooked[n] for n in names] + [record_id])
+    c.execute(f"UPDATE {resource} SET {','.join(n+'=%s' for n in names)} WHERE id=%s", [cooked[n] for n in names] + [record_id])
     if c.rowcount == 0:
         raise ValueError("السجل غير موجود")
     return record_id
@@ -464,16 +646,16 @@ def deactivate_entity(resource: str, record_id: int, user_id: int | None = None)
     if resource not in allowed:
         raise ValueError("لا يمكن تعطيل هذا النوع من السجلات")
     if resource == "warehouses":
-        row = _fetch_one("SELECT is_default FROM warehouses WHERE id=?", (record_id,))
+        row = _fetch_one("SELECT is_default FROM warehouses WHERE id=%s", (record_id,))
         if row and row[0]:
             raise ValueError("لا يمكن تعطيل المخزن الافتراضي قبل تعيين مخزن افتراضي آخر")
     if resource == "accounts":
-        row = _fetch_one("SELECT is_system FROM accounts WHERE id=?", (record_id,))
+        row = _fetch_one("SELECT is_system FROM accounts WHERE id=%s", (record_id,))
         if row and row[0]:
             raise ValueError("لا يمكن تعطيل حساب نظام أساسي")
     with db.transaction() as c:
         old_values = _snapshot(c, resource, record_id)
-        c.execute(f"UPDATE {resource} SET is_active=0 WHERE id=?", (record_id,))
+        c.execute(f"UPDATE {resource} SET is_active=0 WHERE id=%s", (record_id,))
         if c.rowcount == 0:
             raise ValueError("السجل غير موجود")
         _audit(c, user_id, "DEACTIVATE", resource, int(record_id), old_values, {"is_active": 0})
@@ -491,21 +673,21 @@ def add_stock_adjustment(product_id: int, warehouse_id: int, quantity_change: fl
     if movement_type == "DAMAGE" and quantity_change > 0:
         raise ValueError("حركة التلف يجب أن تكون سالبة")
     with db.transaction() as c:
-        product = c.execute("SELECT track_stock,is_active,cost_price FROM products WHERE id=?", (product_id,)).fetchone()
+        product = c.execute("SELECT track_stock,is_active,cost_price FROM products WHERE id=%s", (product_id,)).fetchone()
         if not product or not product[1]:
             raise ValueError("المنتج غير موجود أو غير نشط")
         if not product[0]:
             raise ValueError("المنتج لا يتتبع المخزون")
-        wh = c.execute("SELECT is_active FROM warehouses WHERE id=?", (warehouse_id,)).fetchone()
+        wh = c.execute("SELECT is_active FROM warehouses WHERE id=%s", (warehouse_id,)).fetchone()
         if not wh or not wh[0]:
             raise ValueError("المخزن غير موجود أو غير نشط")
-        current_row = c.execute("SELECT quantity FROM stock_levels WHERE product_id=? AND warehouse_id=?", (product_id, warehouse_id)).fetchone()
+        current_row = c.execute("SELECT quantity FROM stock_levels WHERE product_id=%s AND warehouse_id=%s", (product_id, warehouse_id)).fetchone()
         current = float(current_row[0]) if current_row else 0.0
         allow_negative = _setting(c, "allow_negative_stock", "0") == "1"
         if current + quantity_change < -1e-9 and not allow_negative:
             raise ValueError(f"الرصيد الحالي {current:g} ولا يسمح النظام بمخزون سالب")
         cost_per_unit = int(unit_cost if unit_cost is not None else (product[2] or 0))
-        c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(?,?,?,?,?,'MANUAL',NULL,?,?)",
+        c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(%s,%s,%s,%s,%s,'MANUAL',NULL,%s,%s)",
                   (product_id, warehouse_id, movement_type, quantity_change, cost_per_unit, user_id, note or None))
         movement_id = c.lastrowid
         # Keep inventory subledger changes and GL valuation in the same transaction.
@@ -529,9 +711,9 @@ def add_stock_adjustment(product_id: int, warehouse_id: int, quantity_change: fl
                           {"account_id": inventory_id, "debit": 0, "credit": value}])
             _create_journal(c, f"تسوية مخزون للحركة {movement_id}", "STOCK_MOVEMENT", movement_id, user_id, lines)
             if movement_type == "OPENING" and quantity_change > 0:
-                total_before = c.execute("SELECT COALESCE(SUM(quantity),0) FROM stock_levels WHERE product_id=?", (product_id,)).fetchone()[0]
+                total_before = c.execute("SELECT COALESCE(SUM(quantity),0) FROM stock_levels WHERE product_id=%s", (product_id,)).fetchone()[0]
                 if float(total_before or 0) == float(quantity_change):
-                    c.execute("UPDATE products SET cost_price=? WHERE id=?", (cost_per_unit, product_id))
+                    c.execute("UPDATE products SET cost_price=%s WHERE id=%s", (cost_per_unit, product_id))
         _audit(c, user_id, "STOCK_MOVEMENT", "stock_movements", movement_id,
                new_values={"product_id": product_id, "warehouse_id": warehouse_id, "movement_type": movement_type, "quantity_change": quantity_change, "unit_cost": cost_per_unit, "journaled_value": value}, note=note)
 
@@ -551,35 +733,35 @@ def create_stock_transfer(from_warehouse_id: int, to_warehouse_id: int, items: l
         combined[pid] = combined.get(pid, 0.0) + qty
     items = [{"product_id": pid, "quantity": qty} for pid, qty in combined.items()]
     with db.transaction() as c:
-        from_wh = c.execute("SELECT is_active FROM warehouses WHERE id=?", (from_warehouse_id,)).fetchone()
-        to_wh = c.execute("SELECT is_active FROM warehouses WHERE id=?", (to_warehouse_id,)).fetchone()
+        from_wh = c.execute("SELECT is_active FROM warehouses WHERE id=%s", (from_warehouse_id,)).fetchone()
+        to_wh = c.execute("SELECT is_active FROM warehouses WHERE id=%s", (to_warehouse_id,)).fetchone()
         if not from_wh or not from_wh[0] or not to_wh or not to_wh[0]:
             raise ValueError("يجب اختيار مخزنين نشطين")
         settings_allow_negative = _setting(c, "allow_negative_stock", "0") == "1"
         for item in items:
             pid, qty = int(item["product_id"]), float(item["quantity"])
-            row = c.execute("SELECT track_stock,is_active FROM products WHERE id=?", (pid,)).fetchone()
+            row = c.execute("SELECT track_stock,is_active FROM products WHERE id=%s", (pid,)).fetchone()
             if not row or not row[0] or not row[1]:
                 raise ValueError(f"المنتج {pid} غير نشط أو لا يتتبع المخزون")
-            stock = c.execute("SELECT quantity FROM stock_levels WHERE product_id=? AND warehouse_id=?", (pid, from_warehouse_id)).fetchone()
+            stock = c.execute("SELECT quantity FROM stock_levels WHERE product_id=%s AND warehouse_id=%s", (pid, from_warehouse_id)).fetchone()
             available = float(stock[0]) if stock else 0.0
             if not settings_allow_negative and available < qty:
                 raise ValueError(f"الرصيد غير كافٍ للمنتج ID {pid}: المتاح {available:g}، المطلوب {qty:g}")
         number = _next_number(c, "TRANSFER")
-        c.execute("INSERT INTO stock_transfers(number,from_warehouse_id,to_warehouse_id,status,note,created_by) VALUES(?,?,?,'DRAFT',?,?)",
+        c.execute("INSERT INTO stock_transfers(number,from_warehouse_id,to_warehouse_id,status,note,created_by) VALUES(%s,%s,%s,'DRAFT',%s,%s)",
                   (number, from_warehouse_id, to_warehouse_id, note or None, user_id))
         transfer_id = c.lastrowid
         for item in items:
-            c.execute("INSERT INTO stock_transfer_items(transfer_id,product_id,quantity) VALUES(?,?,?)",
+            c.execute("INSERT INTO stock_transfer_items(transfer_id,product_id,quantity) VALUES(%s,%s,%s)",
                       (transfer_id, int(item["product_id"]), float(item["quantity"])))
         # Complete in the same transaction: transfer headers/items and both movements are atomic.
         for item in items:
             pid, qty = int(item["product_id"]), float(item["quantity"])
-            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,reference_type,reference_id,user_id,note) VALUES(?,?,'TRANSFER_OUT',?,'TRANSFER',?,?,?)",
+            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,reference_type,reference_id,user_id,note) VALUES(%s,%s,'TRANSFER_OUT',%s,'TRANSFER',%s,%s,%s)",
                       (pid, from_warehouse_id, -qty, transfer_id, user_id, note or None))
-            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,reference_type,reference_id,user_id,note) VALUES(?,?,'TRANSFER_IN',?,'TRANSFER',?,?,?)",
+            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,reference_type,reference_id,user_id,note) VALUES(%s,%s,'TRANSFER_IN',%s,'TRANSFER',%s,%s,%s)",
                       (pid, to_warehouse_id, qty, transfer_id, user_id, note or None))
-        c.execute("UPDATE stock_transfers SET status='COMPLETED' WHERE id=?", (transfer_id,))
+        c.execute("UPDATE stock_transfers SET status='COMPLETED' WHERE id=%s", (transfer_id,))
         _audit(c, user_id, "COMPLETE", "stock_transfers", transfer_id,
                new_values={"number": number, "from_warehouse_id": from_warehouse_id, "to_warehouse_id": to_warehouse_id, "items": items, "status": "COMPLETED"}, note=note)
         return transfer_id
@@ -594,7 +776,7 @@ def _create_journal(c, description: str, source_type: str, source_id: int | None
     if debits <= 0 or debits != credits:
         raise ValueError(f"القيد غير متوازن: المدين {debits}، الدائن {credits}")
     number = number or _next_number(c, "JOURNAL")
-    c.execute("INSERT INTO journal_entries(number,entry_date,description,source_type,source_id,status,user_id) VALUES(?,?,?,?,?,'DRAFT',?)",
+    c.execute("INSERT INTO journal_entries(number,entry_date,description,source_type,source_id,status,user_id) VALUES(%s,%s,%s,%s,%s,'DRAFT',%s)",
               (number, entry_date or date.today().isoformat(), description, source_type, source_id, user_id))
     entry_id = c.lastrowid
     for line in lines:
@@ -602,9 +784,9 @@ def _create_journal(c, description: str, source_type: str, source_id: int | None
         credit = int(line.get("credit", 0) or 0)
         if debit < 0 or credit < 0 or (debit > 0 and credit > 0) or (debit == 0 and credit == 0):
             raise ValueError("كل بند يجب أن يحتوي على مدين أو دائن فقط وبقيمة موجبة")
-        c.execute("INSERT INTO journal_lines(entry_id,account_id,partner_id,debit,credit,description) VALUES(?,?,?,?,?,?)",
+        c.execute("INSERT INTO journal_lines(entry_id,account_id,partner_id,debit,credit,description) VALUES(%s,%s,%s,%s,%s,%s)",
                   (entry_id, int(line["account_id"]), line.get("partner_id"), debit, credit, line.get("description") or None))
-    c.execute("UPDATE journal_entries SET status='POSTED' WHERE id=?", (entry_id,))
+    c.execute("UPDATE journal_entries SET status='POSTED' WHERE id=%s", (entry_id,))
     _audit(c, user_id, "POST", "journal_entries", entry_id,
            new_values={"number": number, "status": "POSTED", "total_debit": debits, "total_credit": credits, "source_type": source_type, "source_id": source_id})
     return entry_id
@@ -623,7 +805,7 @@ def reverse_manual_journal(entry_id: int, user_id: int | None, reason: str = "")
     """
     with db.transaction() as c:
         original = c.execute(
-            "SELECT number,entry_date,description,source_type,status FROM journal_entries WHERE id=?",
+            "SELECT number,entry_date,description,source_type,status FROM journal_entries WHERE id=%s",
             (entry_id,),
         ).fetchone()
         if not original:
@@ -634,13 +816,13 @@ def reverse_manual_journal(entry_id: int, user_id: int | None, reason: str = "")
         if source_type != "MANUAL":
             raise ValueError("هذا قيد تشغيلي؛ استخدم مسار إرجاع/تصحيح المستند الأصلي")
         already_reversed = c.execute(
-            "SELECT id FROM journal_entries WHERE source_type='REVERSAL' AND source_id=? LIMIT 1",
+            "SELECT id FROM journal_entries WHERE source_type='REVERSAL' AND source_id=%s LIMIT 1",
             (entry_id,),
         ).fetchone()
         if already_reversed:
             raise ValueError("تم عكس هذا القيد من قبل")
         rows = c.execute(
-            "SELECT account_id,partner_id,debit,credit,description FROM journal_lines WHERE entry_id=? ORDER BY id",
+            "SELECT account_id,partner_id,debit,credit,description FROM journal_lines WHERE entry_id=%s ORDER BY id",
             (entry_id,),
         ).fetchall()
         if len(rows) < 2:
@@ -654,7 +836,7 @@ def reverse_manual_journal(entry_id: int, user_id: int | None, reason: str = "")
             c, f"عكس {number}: {reason or description or ''}".strip(),
             "REVERSAL", entry_id, user_id, inverse_lines, entry_date=date.today().isoformat(),
         )
-        c.execute("UPDATE journal_entries SET status='REVERSED' WHERE id=?", (entry_id,))
+        c.execute("UPDATE journal_entries SET status='REVERSED' WHERE id=%s", (entry_id,))
         _audit(c, user_id, "REVERSE", "journal_entries", entry_id,
                old_values={"status": "POSTED"},
                new_values={"status": "REVERSED", "reversal_entry_id": reversal_id, "reason": reason})
@@ -668,20 +850,20 @@ def record_expense(expense_date: str, account_id: int, method_id: int, amount: i
     if amount <= 0:
         raise ValueError("المبلغ يجب أن يكون أكبر من صفر")
     with db.transaction() as c:
-        expense = c.execute("SELECT type,is_active FROM accounts WHERE id=?", (account_id,)).fetchone()
+        expense = c.execute("SELECT type,is_active FROM accounts WHERE id=%s", (account_id,)).fetchone()
         if not expense or expense[0] != "EXPENSE" or not expense[1]:
             raise ValueError("اختر حساب مصروف نشطًا من نوع EXPENSE")
-        method = c.execute("SELECT account_id,is_active FROM payment_methods WHERE id=?", (method_id,)).fetchone()
+        method = c.execute("SELECT account_id,is_active FROM payment_methods WHERE id=%s", (method_id,)).fetchone()
         if not method or not method[1] or not method[0]:
             raise ValueError("طريقة الدفع غير نشطة أو لا ترتبط بحساب أستاذ")
         number = _next_number(c, "EXPENSE")
-        c.execute("INSERT INTO expenses(number,expense_date,account_id,method_id,partner_id,shift_id,amount,description,user_id) VALUES(?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO expenses(number,expense_date,account_id,method_id,partner_id,shift_id,amount,description,user_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (number, expense_date, account_id, method_id, partner_id, shift_id, amount, description or None, user_id))
         expense_id = c.lastrowid
         entry_id = _create_journal(c, f"مصروف {number}: {description or ''}", "EXPENSE", expense_id, user_id,
                                    [{"account_id": account_id, "debit": amount, "credit": 0, "partner_id": partner_id},
                                     {"account_id": int(method[0]), "debit": 0, "credit": amount, "partner_id": partner_id}])
-        c.execute("UPDATE expenses SET journal_entry_id=? WHERE id=?", (entry_id, expense_id))
+        c.execute("UPDATE expenses SET journal_entry_id=%s WHERE id=%s", (entry_id, expense_id))
         _audit(c, user_id, "CREATE", "expenses", expense_id,
                new_values={"number": number, "account_id": account_id, "method_id": method_id, "amount": amount, "partner_id": partner_id, "shift_id": shift_id, "journal_entry_id": entry_id}, note=description)
         return expense_id
@@ -711,11 +893,11 @@ def record_payment(direction: str, partner_id: int | None, method_id: int, amoun
             raise ValueError("نوع المستند غير مدعوم")
     allocations = [{"document_type": k[0], "document_id": k[1], "amount": amount_sum} for k, amount_sum in seen_allocations.items()]
     with db.transaction() as c:
-        method = c.execute("SELECT account_id,is_active FROM payment_methods WHERE id=?", (method_id,)).fetchone()
+        method = c.execute("SELECT account_id,is_active FROM payment_methods WHERE id=%s", (method_id,)).fetchone()
         if not method or not method[1] or not method[0]:
             raise ValueError("طريقة الدفع غير نشطة أو لا ترتبط بحساب أستاذ")
         if partner_id is not None:
-            partner = c.execute("SELECT is_customer,is_supplier,is_active FROM partners WHERE id=?", (partner_id,)).fetchone()
+            partner = c.execute("SELECT is_customer,is_supplier,is_active FROM partners WHERE id=%s", (partner_id,)).fetchone()
             if not partner or not partner[2]:
                 raise ValueError("الشريك غير موجود أو غير نشط")
             if direction == "IN" and not partner[0]:
@@ -731,27 +913,27 @@ def record_payment(direction: str, partner_id: int | None, method_id: int, amoun
             if direction == "OUT" and doc_type != "PURCHASE_INVOICE":
                 raise ValueError("السداد للمورد يوزع على فواتير الشراء فقط")
             if doc_type == "SALE":
-                doc = c.execute("SELECT customer_id,total,status,sale_type FROM sales WHERE id=?", (doc_id,)).fetchone()
+                doc = c.execute("SELECT customer_id,total,status,sale_type FROM sales WHERE id=%s", (doc_id,)).fetchone()
                 if not doc or doc[2] != "POSTED" or doc[3] != "SALE":
                     raise ValueError(f"فاتورة البيع {doc_id} غير موجودة أو ليست فاتورة بيع أصلية مرحلة")
                 if partner_id is not None and doc[0] != partner_id:
                     raise ValueError("العميل لا يطابق العميل الموجود في فاتورة البيع")
-                already = c.execute("SELECT COALESCE(SUM(amount),0) FROM payment_allocations WHERE document_type='SALE' AND document_id=?", (doc_id,)).fetchone()[0]
+                already = c.execute("SELECT COALESCE(SUM(amount),0) FROM payment_allocations WHERE document_type='SALE' AND document_id=%s", (doc_id,)).fetchone()[0]
             else:
-                doc = c.execute("SELECT supplier_id,total,status,invoice_type FROM purchase_invoices WHERE id=?", (doc_id,)).fetchone()
+                doc = c.execute("SELECT supplier_id,total,status,invoice_type FROM purchase_invoices WHERE id=%s", (doc_id,)).fetchone()
                 if not doc or doc[2] != "POSTED" or doc[3] != "PURCHASE":
                     raise ValueError(f"فاتورة الشراء {doc_id} غير موجودة أو ليست فاتورة شراء أصلية مرحلة")
                 if partner_id is not None and doc[0] != partner_id:
                     raise ValueError("المورد لا يطابق المورد الموجود في فاتورة الشراء")
-                already = c.execute("SELECT COALESCE(SUM(amount),0) FROM payment_allocations WHERE document_type='PURCHASE_INVOICE' AND document_id=?", (doc_id,)).fetchone()[0]
+                already = c.execute("SELECT COALESCE(SUM(amount),0) FROM payment_allocations WHERE document_type='PURCHASE_INVOICE' AND document_id=%s", (doc_id,)).fetchone()[0]
             if int(already) + alloc_amount > int(doc[1]):
                 raise ValueError(f"التوزيع يتجاوز المتبقي من المستند {doc_id}")
         number = _next_number(c, "PAYMENT")
-        c.execute("INSERT INTO payments(number,direction,partner_id,method_id,shift_id,amount,reference,note,user_id) VALUES(?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO payments(number,direction,partner_id,method_id,shift_id,amount,reference,note,user_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (number, direction, partner_id, method_id, shift_id, amount, reference or None, note or None, user_id))
         payment_id = c.lastrowid
         for alloc in allocations:
-            c.execute("INSERT INTO payment_allocations(payment_id,document_type,document_id,amount) VALUES(?,?,?,?)",
+            c.execute("INSERT INTO payment_allocations(payment_id,document_type,document_id,amount) VALUES(%s,%s,%s,%s)",
                       (payment_id, alloc["document_type"], int(alloc["document_id"]), int(alloc["amount"])))
         account_cash = int(method[0])
         ar_id = _configured_account_id(c, "account.receivable")
@@ -771,10 +953,10 @@ def open_cash_shift(user_id: int, opening_cash: int = 0, note: str = "") -> int:
     if int(opening_cash) < 0:
         raise ValueError("رصيد بداية الوردية لا يمكن أن يكون سالبًا")
     with db.transaction() as c:
-        row = c.execute("SELECT id FROM cash_shifts WHERE user_id=? AND status='OPEN'", (user_id,)).fetchone()
+        row = c.execute("SELECT id FROM cash_shifts WHERE user_id=%s AND status='OPEN'", (user_id,)).fetchone()
         if row:
             raise ValueError("لديك وردية مفتوحة بالفعل")
-        c.execute("INSERT INTO cash_shifts(user_id,opening_cash,note) VALUES(?,?,?)", (user_id, int(opening_cash), note or None))
+        c.execute("INSERT INTO cash_shifts(user_id,opening_cash,note) VALUES(%s,%s,%s)", (user_id, int(opening_cash), note or None))
         shift_id = c.lastrowid
         _audit(c, user_id, "OPEN_SHIFT", "cash_shifts", shift_id, new_values={"opening_cash": int(opening_cash), "status": "OPEN"}, note=note)
         return shift_id
@@ -785,16 +967,16 @@ def close_cash_shift(shift_id: int, closing_cash: int, user_id: int | None = Non
     if closing_cash < 0:
         raise ValueError("المبلغ الفعلي لا يمكن أن يكون سالبًا")
     with db.transaction() as c:
-        shift = c.execute("SELECT opening_cash,status FROM cash_shifts WHERE id=?", (shift_id,)).fetchone()
+        shift = c.execute("SELECT opening_cash,status FROM cash_shifts WHERE id=%s", (shift_id,)).fetchone()
         if not shift or shift[1] != "OPEN":
             raise ValueError("الوردية غير موجودة أو مغلقة")
         cash_methods = "SELECT id FROM payment_methods WHERE kind='CASH'"
-        inbound = c.execute(f"SELECT COALESCE(SUM(amount),0) FROM payments WHERE shift_id=? AND direction='IN' AND method_id IN ({cash_methods})", (shift_id,)).fetchone()[0]
-        outbound = c.execute(f"SELECT COALESCE(SUM(amount),0) FROM payments WHERE shift_id=? AND direction='OUT' AND method_id IN ({cash_methods})", (shift_id,)).fetchone()[0]
-        expenses = c.execute("SELECT COALESCE(SUM(e.amount),0) FROM expenses e JOIN payment_methods pm ON pm.id=e.method_id WHERE e.shift_id=? AND pm.kind='CASH'", (shift_id,)).fetchone()[0]
-        direct_sales = c.execute("SELECT COALESCE(SUM(CASE sale_type WHEN 'SALE' THEN total ELSE -total END),0) FROM sales WHERE shift_id=? AND customer_id IS NULL AND status='POSTED'", (shift_id,)).fetchone()[0]
+        inbound = c.execute(f"SELECT COALESCE(SUM(amount),0) FROM payments WHERE shift_id=%s AND direction='IN' AND method_id IN ({cash_methods})", (shift_id,)).fetchone()[0]
+        outbound = c.execute(f"SELECT COALESCE(SUM(amount),0) FROM payments WHERE shift_id=%s AND direction='OUT' AND method_id IN ({cash_methods})", (shift_id,)).fetchone()[0]
+        expenses = c.execute("SELECT COALESCE(SUM(e.amount),0) FROM expenses e JOIN payment_methods pm ON pm.id=e.method_id WHERE e.shift_id=%s AND pm.kind='CASH'", (shift_id,)).fetchone()[0]
+        direct_sales = c.execute("SELECT COALESCE(SUM(CASE sale_type WHEN 'SALE' THEN total ELSE -total END),0) FROM sales WHERE shift_id=%s AND customer_id IS NULL AND status='POSTED'", (shift_id,)).fetchone()[0]
         expected = int(shift[0]) + int(inbound) - int(outbound) - int(expenses) + int(direct_sales)
-        c.execute("UPDATE cash_shifts SET closed_at=CURRENT_TIMESTAMP,closing_cash=?,expected_cash=?,status='CLOSED' WHERE id=?", (closing_cash, expected, shift_id))
+        c.execute("UPDATE cash_shifts SET closed_at=CURRENT_TIMESTAMP,closing_cash=%s,expected_cash=%s,status='CLOSED' WHERE id=%s", (closing_cash, expected, shift_id))
         _audit(c, user_id, "CLOSE_SHIFT", "cash_shifts", shift_id,
                old_values={"status": "OPEN", "opening_cash": shift[0]}, new_values={"status": "CLOSED", "closing_cash": closing_cash, "expected_cash": expected})
         return expected
@@ -805,18 +987,18 @@ def create_purchase_order(supplier_id: int, product_id: int, quantity: float, un
     if quantity <= 0 or unit_cost < 0:
         raise ValueError("الكمية يجب أن تكون موجبة والتكلفة غير سالبة")
     with db.transaction() as c:
-        supplier = c.execute("SELECT is_supplier,is_active FROM partners WHERE id=?", (supplier_id,)).fetchone()
-        product = c.execute("SELECT name,is_active FROM products WHERE id=?", (product_id,)).fetchone()
+        supplier = c.execute("SELECT is_supplier,is_active FROM partners WHERE id=%s", (supplier_id,)).fetchone()
+        product = c.execute("SELECT name,is_active FROM products WHERE id=%s", (product_id,)).fetchone()
         if not supplier or not supplier[0] or not supplier[1]:
             raise ValueError("اختر موردًا نشطًا")
         if not product or not product[1]:
             raise ValueError("اختر منتجًا نشطًا")
         number = _next_number(c, "PURCHASE_ORDER")
         total = round(float(quantity) * int(unit_cost))
-        c.execute("INSERT INTO purchase_orders(number,supplier_id,expected_date,status,total,note,created_by) VALUES(?,?,?,'DRAFT',?,?,?)",
+        c.execute("INSERT INTO purchase_orders(number,supplier_id,expected_date,status,total,note,created_by) VALUES(%s,%s,%s,'DRAFT',%s,%s,%s)",
                   (number, supplier_id, expected_date or None, total, note or None, user_id))
         order_id = c.lastrowid
-        c.execute("INSERT INTO purchase_order_items(order_id,product_id,quantity,unit_cost) VALUES(?,?,?,?)", (order_id, product_id, quantity, unit_cost))
+        c.execute("INSERT INTO purchase_order_items(order_id,product_id,quantity,unit_cost) VALUES(%s,%s,%s,%s)", (order_id, product_id, quantity, unit_cost))
         _audit(c, user_id, "CREATE_DRAFT", "purchase_orders", order_id,
                new_values={"number": number, "supplier_id": supplier_id, "product_id": product_id, "quantity": quantity, "unit_cost": unit_cost, "total": total})
         return order_id
@@ -832,9 +1014,9 @@ def create_purchase_invoice(supplier_id: int, warehouse_id: int, product_id: int
     if quantity <= 0 or unit_cost < 0 or (tax_rate_bp is not None and tax_rate_bp < 0):
         raise ValueError("الكمية والتكلفة/الضريبة غير صحيحة")
     with db.transaction() as c:
-        supplier = c.execute("SELECT is_supplier,is_active FROM partners WHERE id=?", (supplier_id,)).fetchone()
-        product = c.execute("SELECT name,cost_price,track_stock,is_active,tax_rate_id FROM products WHERE id=?", (product_id,)).fetchone()
-        warehouse = c.execute("SELECT is_active FROM warehouses WHERE id=?", (warehouse_id,)).fetchone()
+        supplier = c.execute("SELECT is_supplier,is_active FROM partners WHERE id=%s", (supplier_id,)).fetchone()
+        product = c.execute("SELECT name,cost_price,track_stock,is_active,tax_rate_id FROM products WHERE id=%s", (product_id,)).fetchone()
+        warehouse = c.execute("SELECT is_active FROM warehouses WHERE id=%s", (warehouse_id,)).fetchone()
         if not supplier or not supplier[0] or not supplier[1]:
             raise ValueError("اختر موردًا نشطًا")
         if not product or not product[3]:
@@ -842,7 +1024,7 @@ def create_purchase_invoice(supplier_id: int, warehouse_id: int, product_id: int
         if not product[2]:
             raise ValueError("مسار فاتورة الشراء المرحلة يدعم المنتجات التي تتبع المخزون فقط")
         if tax_rate_bp is None:
-            tax_row = c.execute("SELECT rate_bp FROM tax_rates WHERE id=? AND is_active=1", (product[4],)).fetchone() if product[4] else None
+            tax_row = c.execute("SELECT rate_bp FROM tax_rates WHERE id=%s AND is_active=1", (product[4],)).fetchone() if product[4] else None
             tax_rate_bp = int(tax_row[0]) if tax_row else 0
         if not warehouse or not warehouse[0]:
             raise ValueError("اختر مخزنًا نشطًا")
@@ -853,21 +1035,21 @@ def create_purchase_invoice(supplier_id: int, warehouse_id: int, product_id: int
             raise ValueError("لا يمكن ترحيل فاتورة شراء بقيمة صفر")
         number = _next_number(c, "PURCHASE_INVOICE")
         status = "POSTED" if post else "DRAFT"
-        c.execute("INSERT INTO purchase_invoices(number,supplier_id,warehouse_id,status,subtotal,tax_total,total,note,created_by) VALUES(?,?,?, ?,?,?,?, ?,?)",
+        c.execute("INSERT INTO purchase_invoices(number,supplier_id,warehouse_id,status,subtotal,tax_total,total,note,created_by) VALUES(%s,%s,%s, %s,%s,%s,%s, %s,%s)",
                   (number, supplier_id, warehouse_id, status, subtotal, tax_amount, total, note or None, user_id))
         invoice_id = c.lastrowid
-        c.execute("INSERT INTO purchase_invoice_items(invoice_id,product_id,product_name,quantity,unit_cost,tax_rate_bp,tax_amount,line_total) VALUES(?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO purchase_invoice_items(invoice_id,product_id,product_name,quantity,unit_cost,tax_rate_bp,tax_amount,line_total) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
                   (invoice_id, product_id, product[0], quantity, unit_cost, tax_rate_bp, tax_amount, total))
         if post:
             if product[2]:
-                current_qty_row = c.execute("SELECT COALESCE(SUM(quantity),0) FROM stock_levels WHERE product_id=?", (product_id,)).fetchone()
+                current_qty_row = c.execute("SELECT COALESCE(SUM(quantity),0) FROM stock_levels WHERE product_id=%s", (product_id,)).fetchone()
                 current_qty = max(0.0, float(current_qty_row[0] or 0))
                 incoming_unit_cost = round(total / quantity)
                 denominator = current_qty + float(quantity)
                 new_cost = round((current_qty * int(product[1]) + float(quantity) * incoming_unit_cost) / denominator) if denominator > 0 else incoming_unit_cost
-                c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(?,?,'PURCHASE',?,?,?,?,?,?)",
+                c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(%s,%s,'PURCHASE',%s,%s,%s,%s,%s,%s)",
                           (product_id, warehouse_id, quantity, incoming_unit_cost, "PURCHASE_INVOICE", invoice_id, user_id, note or None))
-                c.execute("UPDATE products SET cost_price=? WHERE id=?", (new_cost, product_id))
+                c.execute("UPDATE products SET cost_price=%s WHERE id=%s", (new_cost, product_id))
             payable_id = _configured_account_id(c, "account.payable")
             inventory_id = _configured_account_id(c, "account.inventory")
             _create_journal(c, f"فاتورة شراء {number}", "PURCHASE_INVOICE", invoice_id, user_id,
@@ -884,17 +1066,17 @@ def create_sale(customer_id: int | None, warehouse_id: int, product_id: int, qua
     if quantity <= 0 or unit_price < 0 or discount < 0 or (tax_rate_bp is not None and tax_rate_bp < 0):
         raise ValueError("بيانات البيع غير صحيحة")
     with db.transaction() as c:
-        product = c.execute("SELECT name,cost_price,track_stock,is_active,tax_rate_id FROM products WHERE id=?", (product_id,)).fetchone()
-        warehouse = c.execute("SELECT is_active FROM warehouses WHERE id=?", (warehouse_id,)).fetchone()
+        product = c.execute("SELECT name,cost_price,track_stock,is_active,tax_rate_id FROM products WHERE id=%s", (product_id,)).fetchone()
+        warehouse = c.execute("SELECT is_active FROM warehouses WHERE id=%s", (warehouse_id,)).fetchone()
         if not product or not product[3]:
             raise ValueError("اختر منتجًا نشطًا")
         if not warehouse or not warehouse[0]:
             raise ValueError("اختر مخزنًا نشطًا")
         if tax_rate_bp is None:
-            tax_row = c.execute("SELECT rate_bp FROM tax_rates WHERE id=? AND is_active=1", (product[4],)).fetchone() if product[4] else None
+            tax_row = c.execute("SELECT rate_bp FROM tax_rates WHERE id=%s AND is_active=1", (product[4],)).fetchone() if product[4] else None
             tax_rate_bp = int(tax_row[0]) if tax_row else 0
         if customer_id is not None:
-            customer = c.execute("SELECT is_customer,is_active FROM partners WHERE id=?", (customer_id,)).fetchone()
+            customer = c.execute("SELECT is_customer,is_active FROM partners WHERE id=%s", (customer_id,)).fetchone()
             if not customer or not customer[0] or not customer[1]:
                 raise ValueError("اختر عميلًا نشطًا")
         base = round(float(quantity) * int(unit_price))
@@ -906,19 +1088,19 @@ def create_sale(customer_id: int | None, warehouse_id: int, product_id: int, qua
         if post and total <= 0:
             raise ValueError("لا يمكن ترحيل عملية بيع بقيمة صفر")
         if product[2]:
-            stock = c.execute("SELECT quantity FROM stock_levels WHERE product_id=? AND warehouse_id=?", (product_id, warehouse_id)).fetchone()
+            stock = c.execute("SELECT quantity FROM stock_levels WHERE product_id=%s AND warehouse_id=%s", (product_id, warehouse_id)).fetchone()
             available = float(stock[0]) if stock else 0.0
             if available < quantity and _setting(c, "allow_negative_stock", "0") != "1":
                 raise ValueError(f"المخزون غير كافٍ: المتاح {available:g}")
         number = _next_number(c, "SALE")
         status = "POSTED" if post else "DRAFT"
-        c.execute("INSERT INTO sales(number,sale_type,customer_id,warehouse_id,cashier_id,shift_id,status,subtotal,tax_total,discount,total,note) VALUES(?,'SALE',?,?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO sales(number,sale_type,customer_id,warehouse_id,cashier_id,shift_id,status,subtotal,tax_total,discount,total,note) VALUES(%s,'SALE',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (number, customer_id, warehouse_id, cashier_id, shift_id, status, base, tax_amount, discount, total, note or None))
         sale_id = c.lastrowid
-        c.execute("INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,unit_cost,line_discount,tax_rate_bp,tax_amount,line_total) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,unit_cost,line_discount,tax_rate_bp,tax_amount,line_total) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (sale_id, product_id, product[0], quantity, unit_price, product[1], discount, tax_rate_bp, tax_amount, total))
         if post and product[2]:
-            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(?,?,'SALE',?,?,?,?,?,?)",
+            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(%s,%s,'SALE',%s,%s,%s,%s,%s,%s)",
                       (product_id, warehouse_id, -quantity, product[1], "SALE", sale_id, cashier_id, note or None))
         if post:
             sales_account = _configured_account_id(c, "account.sales")
@@ -948,14 +1130,14 @@ def create_sale_return(original_sale_id: int, product_id: int, quantity: float,
     if quantity <= 0:
         raise ValueError("كمية المرتجع يجب أن تكون موجبة")
     with db.transaction() as c:
-        original = c.execute("SELECT number,customer_id,warehouse_id,status,sale_type FROM sales WHERE id=?", (original_sale_id,)).fetchone()
+        original = c.execute("SELECT number,customer_id,warehouse_id,status,sale_type FROM sales WHERE id=%s", (original_sale_id,)).fetchone()
         if not original or original[3] != "POSTED" or original[4] != "SALE":
             raise ValueError("فاتورة البيع الأصلية غير موجودة أو ليست فاتورة بيع مرحلة")
-        line = c.execute("SELECT product_name,quantity,unit_price,unit_cost,line_discount,tax_rate_bp FROM sale_items WHERE sale_id=? AND product_id=? ORDER BY id LIMIT 1", (original_sale_id, product_id)).fetchone()
+        line = c.execute("SELECT product_name,quantity,unit_price,unit_cost,line_discount,tax_rate_bp FROM sale_items WHERE sale_id=%s AND product_id=%s ORDER BY id LIMIT 1", (original_sale_id, product_id)).fetchone()
         if not line:
             raise ValueError("المنتج لا يوجد ضمن الفاتورة الأصلية")
         product_name, sold_qty, unit_price, unit_cost, original_discount, tax_rate_bp = line
-        already_returned = c.execute("SELECT COALESCE(SUM(si.quantity),0) FROM sale_items si JOIN sales r ON r.id=si.sale_id WHERE r.original_sale_id=? AND r.sale_type='RETURN' AND r.status='POSTED' AND si.product_id=?", (original_sale_id, product_id)).fetchone()[0]
+        already_returned = c.execute("SELECT COALESCE(SUM(si.quantity),0) FROM sale_items si JOIN sales r ON r.id=si.sale_id WHERE r.original_sale_id=%s AND r.sale_type='RETURN' AND r.status='POSTED' AND si.product_id=%s", (original_sale_id, product_id)).fetchone()[0]
         remaining = float(sold_qty) - float(already_returned)
         if quantity > remaining + 1e-9:
             raise ValueError(f"الكمية المتبقية للمرتجع {remaining:g} فقط")
@@ -966,14 +1148,14 @@ def create_sale_return(original_sale_id: int, product_id: int, quantity: float,
         if total <= 0:
             raise ValueError("لا يمكن إنشاء مرتجع بقيمة صفر")
         number = _next_number(c, "SALE_RETURN")
-        c.execute("INSERT INTO sales(number,sale_type,original_sale_id,customer_id,warehouse_id,cashier_id,shift_id,status,subtotal,tax_total,discount,total,note) VALUES(?,'RETURN',?,?,?,?,?,'POSTED',?,?,?,?,?)",
+        c.execute("INSERT INTO sales(number,sale_type,original_sale_id,customer_id,warehouse_id,cashier_id,shift_id,status,subtotal,tax_total,discount,total,note) VALUES(%s,'RETURN',%s,%s,%s,%s,%s,'POSTED',%s,%s,%s,%s,%s)",
                   (number, original_sale_id, original[1], original[2], cashier_id, shift_id, base, tax_amount, discount, total, note or f"مرتجع من {original[0]}"))
         return_id = c.lastrowid
-        c.execute("INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,unit_cost,line_discount,tax_rate_bp,tax_amount,line_total) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,unit_cost,line_discount,tax_rate_bp,tax_amount,line_total) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (return_id, product_id, product_name, quantity, unit_price, unit_cost, discount, tax_rate_bp, tax_amount, total))
-        product = c.execute("SELECT track_stock FROM products WHERE id=?", (product_id,)).fetchone()
+        product = c.execute("SELECT track_stock FROM products WHERE id=%s", (product_id,)).fetchone()
         if product and product[0]:
-            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(?,?,'SALE_RETURN',?,?,?,?,?,?)",
+            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(%s,%s,'SALE_RETURN',%s,%s,%s,%s,%s,%s)",
                       (product_id, original[2], quantity, unit_cost, "SALE", return_id, cashier_id, note or None))
         returns_account = _configured_account_id(c, "account.sales_returns")
         tax_account = _configured_account_id(c, "account.tax_payable")
@@ -1006,14 +1188,14 @@ def create_purchase_return(original_invoice_id: int, product_id: int, quantity: 
     if quantity <= 0:
         raise ValueError("كمية المرتجع يجب أن تكون موجبة")
     with db.transaction() as c:
-        original = c.execute("SELECT number,supplier_id,warehouse_id,status,invoice_type FROM purchase_invoices WHERE id=?", (original_invoice_id,)).fetchone()
+        original = c.execute("SELECT number,supplier_id,warehouse_id,status,invoice_type FROM purchase_invoices WHERE id=%s", (original_invoice_id,)).fetchone()
         if not original or original[3] != "POSTED" or original[4] != "PURCHASE":
             raise ValueError("فاتورة الشراء الأصلية غير موجودة أو ليست فاتورة شراء مرحلة")
-        line = c.execute("SELECT product_name,quantity,unit_cost,line_discount,tax_rate_bp,tax_amount FROM purchase_invoice_items WHERE invoice_id=? AND product_id=? ORDER BY id LIMIT 1", (original_invoice_id, product_id)).fetchone()
+        line = c.execute("SELECT product_name,quantity,unit_cost,line_discount,tax_rate_bp,tax_amount FROM purchase_invoice_items WHERE invoice_id=%s AND product_id=%s ORDER BY id LIMIT 1", (original_invoice_id, product_id)).fetchone()
         if not line:
             raise ValueError("المنتج لا يوجد ضمن الفاتورة الأصلية")
         product_name, purchased_qty, unit_cost, original_discount, tax_rate_bp, original_tax = line
-        already_returned = c.execute("SELECT COALESCE(SUM(pii.quantity),0) FROM purchase_invoice_items pii JOIN purchase_invoices r ON r.id=pii.invoice_id WHERE r.invoice_type='RETURN' AND r.supplier_ref=? AND r.status='POSTED' AND pii.product_id=?", (original[0], product_id)).fetchone()[0]
+        already_returned = c.execute("SELECT COALESCE(SUM(pii.quantity),0) FROM purchase_invoice_items pii JOIN purchase_invoices r ON r.id=pii.invoice_id WHERE r.invoice_type='RETURN' AND r.supplier_ref=%s AND r.status='POSTED' AND pii.product_id=%s", (original[0], product_id)).fetchone()[0]
         remaining = float(purchased_qty) - float(already_returned)
         if quantity > remaining + 1e-9:
             raise ValueError(f"الكمية المتبقية للمرتجع {remaining:g} فقط")
@@ -1025,18 +1207,18 @@ def create_purchase_return(original_invoice_id: int, product_id: int, quantity: 
         if total <= 0:
             raise ValueError("لا يمكن إنشاء مرتجع بقيمة صفر")
         number = _next_number(c, "PURCHASE_INVOICE")
-        c.execute("INSERT INTO purchase_invoices(number,invoice_type,supplier_id,warehouse_id,supplier_ref,status,subtotal,discount,tax_total,total,note,created_by) VALUES(?,'RETURN',?,?,?,'POSTED',?,?,?,?,?,?)",
+        c.execute("INSERT INTO purchase_invoices(number,invoice_type,supplier_id,warehouse_id,supplier_ref,status,subtotal,discount,tax_total,total,note,created_by) VALUES(%s,'RETURN',%s,%s,%s,'POSTED',%s,%s,%s,%s,%s,%s)",
                   (number, original[1], original[2], original[0], subtotal, discount, tax_amount, total, note or f"مرتجع من {original[0]}", user_id))
         return_id = c.lastrowid
-        c.execute("INSERT INTO purchase_invoice_items(invoice_id,product_id,product_name,quantity,unit_cost,line_discount,tax_rate_bp,tax_amount,line_total) VALUES(?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO purchase_invoice_items(invoice_id,product_id,product_name,quantity,unit_cost,line_discount,tax_rate_bp,tax_amount,line_total) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (return_id, product_id, product_name, quantity, unit_cost, discount, tax_rate_bp, tax_amount, total))
-        product = c.execute("SELECT track_stock FROM products WHERE id=?", (product_id,)).fetchone()
+        product = c.execute("SELECT track_stock FROM products WHERE id=%s", (product_id,)).fetchone()
         if product and product[0]:
-            stock = c.execute("SELECT quantity FROM stock_levels WHERE product_id=? AND warehouse_id=?", (product_id, original[2])).fetchone()
+            stock = c.execute("SELECT quantity FROM stock_levels WHERE product_id=%s AND warehouse_id=%s", (product_id, original[2])).fetchone()
             available = float(stock[0]) if stock else 0.0
             if available < quantity and _setting(c, "allow_negative_stock", "0") != "1":
                 raise ValueError(f"المخزون المتاح {available:g} لا يكفي لمرتجع المورد")
-            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(?,?,'PURCHASE_RETURN',?,?,?,?,?,?)",
+            c.execute("INSERT INTO stock_movements(product_id,warehouse_id,movement_type,quantity_change,unit_cost,reference_type,reference_id,user_id,note) VALUES(%s,%s,'PURCHASE_RETURN',%s,%s,%s,%s,%s,%s)",
                       (product_id, original[2], -quantity, unit_cost, "PURCHASE_INVOICE", return_id, user_id, note or None))
         payable_id = _configured_account_id(c, "account.payable")
         inventory_id = _configured_account_id(c, "account.inventory")
@@ -1053,12 +1235,12 @@ def create_payroll_draft(period_start: str, period_end: str, user_id: int | None
         raise ValueError("نهاية الفترة يجب أن تكون بعد بدايتها")
     with db.transaction() as c:
         number = _next_number(c, "PAYROLL")
-        c.execute("INSERT INTO payroll_runs(number,period_start,period_end,status,created_by) VALUES(?,?,?,'DRAFT',?)",
+        c.execute("INSERT INTO payroll_runs(number,period_start,period_end,status,created_by) VALUES(%s,%s,%s,'DRAFT',%s)",
                   (number, period_start, period_end, user_id))
         run_id = c.lastrowid
-        employees = c.execute("SELECT id,base_salary FROM employees WHERE is_active=1 AND (termination_date IS NULL OR termination_date>=?)", (period_start,)).fetchall()
+        employees = c.execute("SELECT id,base_salary FROM employees WHERE is_active=1 AND (termination_date IS NULL OR termination_date>=%s)", (period_start,)).fetchall()
         for employee_id, base_salary in employees:
-            c.execute("INSERT INTO payslips(run_id,employee_id,base_salary,allowances,deductions,advances_deducted,net_pay) VALUES(?,?,?,0,0,0,?)",
+            c.execute("INSERT INTO payslips(run_id,employee_id,base_salary,allowances,deductions,advances_deducted,net_pay) VALUES(%s,%s,%s,0,0,0,%s)",
                       (run_id, employee_id, base_salary, base_salary))
         _audit(c, user_id, "CREATE_DRAFT", "payroll_runs", run_id,
                new_values={"number": number, "period_start": period_start, "period_end": period_end, "payslip_count": len(employees)})
@@ -1092,22 +1274,22 @@ def get_field_choices(field_name: str):
 
 def get_role_permissions(role_id: int):
     all_permissions = _fetch_all("SELECT id,code,COALESCE(description,'') FROM permissions ORDER BY code")
-    assigned = {row[0] for row in _fetch_all("SELECT permission_id FROM role_permissions WHERE role_id=?", (role_id,))}
-    role = _fetch_one("SELECT name,is_system FROM roles WHERE id=?", (role_id,))
+    assigned = {row[0] for row in _fetch_all("SELECT permission_id FROM role_permissions WHERE role_id=%s", (role_id,))}
+    role = _fetch_one("SELECT name,is_system FROM roles WHERE id=%s", (role_id,))
     return all_permissions, assigned, role
 
 
 def set_role_permissions(role_id: int, permission_ids: list[int], user_id: int | None = None):
     with db.transaction() as c:
-        role = c.execute("SELECT id,name FROM roles WHERE id=?", (role_id,)).fetchone()
+        role = c.execute("SELECT id,name FROM roles WHERE id=%s", (role_id,)).fetchone()
         if not role:
             raise ValueError("الدور غير موجود")
         if role[1] == "Admin":
             all_ids = {r[0] for r in c.execute("SELECT id FROM permissions").fetchall()}
             if set(int(x) for x in permission_ids) != all_ids:
                 raise ValueError("يجب أن يحتفظ دور Admin بجميع الصلاحيات لتجنب قفل الإدارة")
-        c.execute("DELETE FROM role_permissions WHERE role_id=?", (role_id,))
+        c.execute("DELETE FROM role_permissions WHERE role_id=%s", (role_id,))
         for permission_id in sorted(set(int(x) for x in permission_ids)):
-            c.execute("INSERT INTO role_permissions(role_id,permission_id) VALUES(?,?)", (role_id, permission_id))
+            c.execute("INSERT INTO role_permissions(role_id,permission_id) VALUES(%s,%s)", (role_id, permission_id))
         _audit(c, user_id, "UPDATE_PERMISSIONS", "roles", int(role_id), new_values={"permission_ids": sorted(set(int(x) for x in permission_ids))})
 
