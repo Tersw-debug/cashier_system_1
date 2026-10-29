@@ -229,3 +229,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+#pyinstaller --noconfirm --clean --onefile --windowed --name program --distpath output --workpath build --add-data "Amiri-Regular.ttf;." --add-data "UI\assets;UI\assets" --collect-all keyring main.py
