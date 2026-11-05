@@ -6,13 +6,17 @@ imports legacy inventory/customer SQL or image assets.
 from __future__ import annotations
 
 from datetime import date
-import tkinter as tk
-from tkinter import ttk, messagebox
-import customtkinter as ctk
+from UI.qt_compat import (
+    BOTH, CENTER, END, LEFT, RIGHT, X, Y,
+    StringVar, BooleanVar,
+    QtFrame, QtLabel, QtButton, QtLineEdit, QtComboBox, QtCheckBox,
+    QtScrollableFrame, QtTextEdit, QtDialog, QtTreeWidget, QtScrollBar,
+    QtStyle, TclError, dialogs, colorchooser,
+)
+from UI.common import is_dark
 
 from Services import admin_service as svc
 from UI.router import go_login
-from UI.rtl import fix
 import json
 
 username = ""
@@ -26,7 +30,7 @@ def getUsername(username_from_login: str):
 
 
 def _appearance_colors():
-    dark = ctk.get_appearance_mode() == "Dark"
+    dark = is_dark()
     return {
         "bg": "#121212" if dark else "#f4f6f8",
         "card": "#1e1e1e" if dark else "#ffffff",
@@ -42,10 +46,10 @@ def _appearance_colors():
 
 def _style_treeview():
     colors = _appearance_colors()
-    style = ttk.Style()
+    style = QtStyle()
     try:
         style.theme_use("clam")
-    except tk.TclError:
+    except TclError:
         pass
     style.configure("Admin.Treeview", background=colors["card"], foreground=colors["text"],
                     fieldbackground=colors["card"], rowheight=29, borderwidth=0,
@@ -119,18 +123,18 @@ def _field_default(field):
     return date.today().isoformat() if default == "today" else default
 
 
-class ColorField(ctk.CTkFrame):
+class ColorField(QtFrame):
     """Hex entry + preview swatch + color chooser. Exposes get() like an entry."""
 
     def __init__(self, master, initial=""):
         super().__init__(master, fg_color="transparent")
         self.grid_columnconfigure(0, weight=1)
-        self._entry = ctk.CTkEntry(self, height=34, placeholder_text="#RRGGBB")
+        self._entry = QtLineEdit(self, height=34, placeholder_text="#RRGGBB")
         self._entry.grid(row=0, column=0, sticky="ew")
-        self._swatch = ctk.CTkLabel(self, text="", width=34, height=34, corner_radius=6, fg_color="transparent")
+        self._swatch = QtLabel(self, text="", width=34, height=34, corner_radius=6, fg_color="transparent")
         self._swatch.grid(row=0, column=1, padx=(6, 0))
-        ctk.CTkButton(self, text="اختيار", width=70, height=34, command=self._pick).grid(row=0, column=2, padx=(6, 0))
-        ctk.CTkButton(self, text="مسح", width=60, height=34, fg_color="#6b7280", command=self.clear).grid(row=0, column=3, padx=(6, 0))
+        QtButton(self, text="اختيار", width=70, height=34, command=self._pick).grid(row=0, column=2, padx=(6, 0))
+        QtButton(self, text="مسح", width=60, height=34, fg_color="#6b7280", command=self.clear).grid(row=0, column=3, padx=(6, 0))
         if initial:
             self._entry.insert(0, str(initial))
         self._entry.bind("<KeyRelease>", lambda _e: self._update_swatch())
@@ -154,7 +158,6 @@ class ColorField(ctk.CTkFrame):
         self._swatch.configure(fg_color=self._valid() or "transparent")
 
     def _pick(self):
-        from tkinter import colorchooser
         _rgb, hexcode = colorchooser.askcolor(color=self._valid(), parent=self.winfo_toplevel(), title="اختر لون المنتج")
         if hexcode:
             self._entry.delete(0, "end")
@@ -192,17 +195,17 @@ def _make_choice_widget(parent, field, current):
                 if str(raw) == str(current):
                     current_display = display
                     break
-        widget = ctk.CTkComboBox(parent, values=values, height=34, state="readonly")
+        widget = QtComboBox(parent, values=values, height=34, state="readonly")
         widget.set(current_display)
         return widget, display_to_value
 
     if name in _ENUM_CHOICES:
         enum_values = _ENUM_CHOICES[name]
-        widget = ctk.CTkComboBox(parent, values=enum_values, height=34, state="readonly")
+        widget = QtComboBox(parent, values=enum_values, height=34, state="readonly")
         widget.set(str(current if current not in (None, "") else field.get("default", enum_values[0])))
         return widget, {v: v for v in enum_values}
 
-    widget = ctk.CTkEntry(parent, height=34, justify="right", show="*" if field.get("secret") else "")
+    widget = QtLineEdit(parent, height=34, justify="right", show="*" if field.get("secret") else "")
     if current not in (None, ""):
         widget.insert(0, str(current))
     elif _field_default(field) not in (None, ""):
@@ -221,7 +224,7 @@ def _prompt_form(title: str, fields: list[dict], on_submit, record: dict | None 
                  parent=None, note: str | None = None):
     parent = parent or _root
     colors = _appearance_colors()
-    win = ctk.CTkToplevel(parent)
+    win = QtDialog(parent)
     win.title(title)
     win.geometry("650x760")
     win.minsize(520, 420)
@@ -229,24 +232,24 @@ def _prompt_form(title: str, fields: list[dict], on_submit, record: dict | None 
     win.transient(parent)
     win.grab_set()
 
-    ctk.CTkLabel(win, text=title, font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(padx=18, pady=(16, 8))
+    QtLabel(win, text=title, font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(padx=18, pady=(16, 8))
     if note:
-        ctk.CTkLabel(win, text=note, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=590, justify="right", anchor="e").pack(fill="x", padx=18, pady=(0, 10))
-    body = ctk.CTkScrollableFrame(win, fg_color=colors["card"], corner_radius=12)
+        QtLabel(win, text=note, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=590, justify="right", anchor="e").pack(fill="x", padx=18, pady=(0, 10))
+    body = QtScrollableFrame(win, fg_color=colors["card"], corner_radius=12)
     body.pack(fill="both", expand=True, padx=18, pady=8)
     body.grid_columnconfigure(0, weight=1)
     body.grid_columnconfigure(1, weight=2)
     widgets = {}
     option_maps = {}
     for row_no, field in enumerate(fields):
-        ctk.CTkLabel(body, text=field["label"], anchor="e", text_color=colors["text"], font=("Segoe UI", 12)).grid(row=row_no, column=1, sticky="ew", padx=10, pady=7)
+        QtLabel(body, text=field["label"], anchor="e", text_color=colors["text"], font=("Segoe UI", 12)).grid(row=row_no, column=1, sticky="ew", padx=10, pady=7)
         current = (record or {}).get(field["name"], _field_default(field))
         widget, display_map = _make_choice_widget(body, field, current)
         widget.grid(row=row_no, column=0, sticky="ew", padx=10, pady=7)
         widgets[field["name"]] = widget
         option_maps[field["name"]] = display_map
 
-    footer = ctk.CTkFrame(win, fg_color="transparent")
+    footer = QtFrame(win, fg_color="transparent")
     footer.pack(fill="x", padx=18, pady=(6, 16))
 
     def submit():
@@ -254,14 +257,14 @@ def _prompt_form(title: str, fields: list[dict], on_submit, record: dict | None 
         try:
             result = on_submit(values)
         except Exception as exc:
-            messagebox.showerror("تعذر الحفظ", str(exc), parent=win)
+            dialogs.showerror("تعذر الحفظ", str(exc), parent=win)
             return
         if result is False:
             return
         win.destroy()
 
-    ctk.CTkButton(footer, text="حفظ", command=submit, fg_color=colors["success"], height=38).pack(side="right", padx=6)
-    ctk.CTkButton(footer, text="إلغاء", command=win.destroy, fg_color="#6b7280", height=38).pack(side="right", padx=6)
+    QtButton(footer, text="حفظ", command=submit, fg_color=colors["success"], height=38).pack(side="right", padx=6)
+    QtButton(footer, text="إلغاء", command=win.destroy, fg_color="#6b7280", height=38).pack(side="right", padx=6)
     return win
 
 
@@ -277,9 +280,9 @@ def _notify_action(success_message: str, action, refresh_resource=None, refresh_
     try:
         action()
     except Exception as exc:
-        messagebox.showerror("خطأ", str(exc), parent=_root)
+        dialogs.showerror("خطأ", str(exc), parent=_root)
         return False
-    messagebox.showinfo("تم", success_message, parent=_root)
+    dialogs.showinfo("تم", success_message, parent=_root)
     _refresh_dashboard()
     if refresh_callback:
         refresh_callback()
@@ -292,7 +295,7 @@ def _open_entity_editor(resource: str, record_id=None, refresh_callback=None):
     if record_id is not None:
         record = svc.get_resource_record(resource, record_id)
         if not record:
-            messagebox.showerror("خطأ", "لم يتم العثور على السجل", parent=_root)
+            dialogs.showerror("خطأ", "لم يتم العثور على السجل", parent=_root)
             return
     title = ("إضافة " if record_id is None else "تعديل ") + svc.RESOURCE_CONFIG[resource]["title"]
     note = None
@@ -310,7 +313,7 @@ def _open_entity_editor(resource: str, record_id=None, refresh_callback=None):
         if refresh_callback:
             refresh_callback()
         _refresh_dashboard()
-        messagebox.showinfo("تم", "تم حفظ البيانات بنجاح", parent=_root)
+        dialogs.showinfo("تم", "تم حفظ البيانات بنجاح", parent=_root)
 
     # For settings, key edits create a new setting because keys are the primary key.
     _prompt_form(title, fields, save, record=record, note=note)
@@ -329,7 +332,7 @@ def _open_audit_log_details(tree, parent, columns):
     vals = _selected_row(tree)
 
     if not vals:
-        messagebox.showwarning(
+        dialogs.showwarning(
             "تنبيه",
             "اختر سجلًا أولًا لعرض تفاصيله.",
             parent=parent,
@@ -353,28 +356,28 @@ def _open_audit_log_details(tree, parent, columns):
 
     colors = _appearance_colors()
 
-    win = ctk.CTkToplevel(parent)
+    win = QtDialog(parent)
     win.title("تفاصيل سجل التدقيق")
     win.geometry("950x700")
     win.minsize(650, 450)
     win.configure(fg_color=colors["bg"])
     win.transient(parent)
 
-    header = ctk.CTkFrame(
+    header = QtFrame(
         win,
         fg_color=colors["card"],
         corner_radius=10,
     )
     header.pack(fill="x", padx=14, pady=(14, 8))
 
-    ctk.CTkLabel(
+    QtLabel(
         header,
         text="تفاصيل سجل التدقيق",
         font=("Segoe UI", 21, "bold"),
         text_color=colors["text"],
     ).pack(anchor="e", padx=14, pady=12)
 
-    text_box = ctk.CTkTextbox(
+    text_box = QtTextEdit(
         win,
         wrap="word",
         font=("Consolas", 12),
@@ -396,7 +399,7 @@ def _open_audit_log_details(tree, parent, columns):
     text_box.insert("1.0", formatted)
     text_box.configure(state="disabled")
 
-    ctk.CTkButton(
+    QtButton(
         win,
         text="إغلاق",
         width=120,
@@ -428,7 +431,7 @@ def _open_stock_adjustment(refresh):
         svc.add_stock_adjustment(product_id, warehouse_id, qty, movement, unit_cost, user_id, v.get("note", ""))
         refresh()
         _refresh_dashboard()
-        messagebox.showinfo("تم", "تم تسجيل حركة المخزون بنجاح", parent=_root)
+        dialogs.showinfo("تم", "تم تسجيل حركة المخزون بنجاح", parent=_root)
     _prompt_form("تسوية المخزون", fields, submit, note="لا تغيّر الكمية مباشرة في جدول المنتجات. ستُضاف حركة جديدة إلى دفتر المخزون.")
 
 
@@ -449,7 +452,7 @@ def _open_transfer(refresh):
                                                 [{"product_id": int(v["product_id"]), "quantity": float(v["quantity"])}],
                                                 svc.get_username_id(username), v.get("note", ""))
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم تسجيل التحويل وإضافة حركتي الصرف والإضافة. رقم السجل: {transfer_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم تسجيل التحويل وإضافة حركتي الصرف والإضافة. رقم السجل: {transfer_id}", parent=_root)
     _prompt_form("تحويل بين المخازن", fields, submit, note="يتم تسجيل التحويل وحركتي المخزون داخل معاملة واحدة. هذه الشاشة تنفذ تحويلًا لصنف واحد في كل مرة.")
 
 
@@ -475,7 +478,7 @@ def _open_sale_form(refresh):
                                   current_user_id, int(v["shift_id"]) if v.get("shift_id") else None,
                                   note=v.get("note", ""), post=True)
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم تسجيل البيع وترحيل القيد. معرف البيع: {sale_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم تسجيل البيع وترحيل القيد. معرف البيع: {sale_id}", parent=_root)
     _prompt_form("تسجيل عملية بيع", fields, submit,
                  note="هذه النسخة تسجل بندًا واحدًا. البيع بعميل مسجل يُرحّل إلى حساب العملاء، والبيع النقدي بدون عميل يُرحّل إلى حساب النقدية. المبالغ بوحدة العملة الصغرى.")
 
@@ -492,7 +495,7 @@ def _open_purchase_order_form(refresh):
     def submit(v):
         order_id = svc.create_purchase_order(int(v["supplier_id"]), int(v["product_id"]), float(v["quantity"]), int(v["unit_cost"]), svc.get_username_id(username), v.get("expected_date") or None, v.get("note", ""))
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم إنشاء أمر الشراء كمسودة. المعرف: {order_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم إنشاء أمر الشراء كمسودة. المعرف: {order_id}", parent=_root)
     _prompt_form("إنشاء أمر شراء", fields, submit, note="أمر الشراء لا يزيد المخزون؛ يتم الاستلام عبر فاتورة الشراء المرحلة.")
 
 
@@ -509,7 +512,7 @@ def _open_sale_return_form(refresh):
             raise ValueError("لا يمكن تحديد المستخدم الحالي من اسم الدخول")
         return_id = svc.create_sale_return(int(v["original_sale_id"]), int(v["product_id"]), float(v["quantity"]), current_user_id, note=v.get("note", ""))
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم ترحيل مرتجع البيع. المعرف: {return_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم ترحيل مرتجع البيع. المعرف: {return_id}", parent=_root)
     _prompt_form("مرتجع بيع", fields, submit, note="اختر فاتورة بيع مرحلة والمنتج المرتبط بها. يمنع النظام إرجاع كمية تتجاوز الكمية المباعة بعد المرتجعات السابقة.")
 
 
@@ -525,12 +528,12 @@ def _open_purchase_invoice_form(refresh):
     ]
     def submit(v):
         if int(v.get("tax_rate_bp") or 0) > 0:
-            ok = messagebox.askyesno("تنبيه محاسبي", "دليل الحسابات الحالي لا يحتوي على حساب ضريبة مدخلات قابلة للاسترداد. ستُضاف الضريبة إلى تكلفة المخزون في القيد. هل تريد المتابعة؟", parent=_root)
+            ok = dialogs.askyesno("تنبيه محاسبي", "دليل الحسابات الحالي لا يحتوي على حساب ضريبة مدخلات قابلة للاسترداد. ستُضاف الضريبة إلى تكلفة المخزون في القيد. هل تريد المتابعة؟", parent=_root)
             if not ok:
                 return False
         invoice_id = svc.create_purchase_invoice(int(v["supplier_id"]), int(v["warehouse_id"]), int(v["product_id"]), float(v["quantity"]), int(v["unit_cost"]), int(v["tax_rate_bp"]) if v.get("tax_rate_bp") else None, svc.get_username_id(username), v.get("note", ""), post=True)
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم ترحيل فاتورة الشراء وزيادة المخزون. المعرف: {invoice_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم ترحيل فاتورة الشراء وزيادة المخزون. المعرف: {invoice_id}", parent=_root)
     _prompt_form("تسجيل فاتورة شراء", fields, submit, note="النسخة الحالية تدعم بندًا واحدًا فقط لكل عملية. ترحيل الفاتورة يزيد المخزون ويُنشئ قيدًا متوازنًا. إذا كانت ضريبة المدخلات قابلة للاسترداد، أضف حساب ضريبة مدخلات قبل استخدام هذا المسار.")
 
 
@@ -544,7 +547,7 @@ def _open_purchase_return_form(refresh):
     def submit(v):
         return_id = svc.create_purchase_return(int(v["original_invoice_id"]), int(v["product_id"]), float(v["quantity"]), svc.get_username_id(username), v.get("note", ""))
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم ترحيل مرتجع الشراء. المعرف: {return_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم ترحيل مرتجع الشراء. المعرف: {return_id}", parent=_root)
     _prompt_form("مرتجع شراء", fields, submit, note="يتحقق النظام من الكمية التي تم شراؤها سابقًا، ويخفض المخزون وينشئ قيدًا متوازنًا. ضريبة الشراء تُعامل ضمن تكلفة المخزون وفق مخطط الحسابات الحالي.")
 
 
@@ -571,7 +574,7 @@ def _open_payment_form(refresh):
             raise ValueError("أدخل معرف المستند أو اترك مبلغ التوزيع فارغًا")
         payment_id = svc.record_payment(v["direction"], int(v["partner_id"]) if v.get("partner_id") else None, int(v["method_id"]), int(v["amount"]), svc.get_username_id(username), allocations, int(v["shift_id"]) if v.get("shift_id") else None, v.get("reference", ""), v.get("note", ""))
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم تسجيل الدفع وإنشاء القيد المحاسبي. المعرف: {payment_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم تسجيل الدفع وإنشاء القيد المحاسبي. المعرف: {payment_id}", parent=_root)
     _prompt_form("تسجيل دفعة أو تحصيل", fields, submit, note="يمكن توزيع الدفع على مستند واحد في هذه الشاشة. أي مبلغ غير موزع يظل رصيدًا على حساب الشريك وفق منطق أرصدة النظام.")
 
 
@@ -588,7 +591,7 @@ def _open_expense_form(refresh):
     def submit(v):
         expense_id = svc.record_expense(v["expense_date"], int(v["account_id"]), int(v["method_id"]), int(v["amount"]), svc.get_username_id(username), v.get("description", ""), int(v["partner_id"]) if v.get("partner_id") else None, int(v["shift_id"]) if v.get("shift_id") else None)
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم تسجيل المصروف وإنشاء القيد. المعرف: {expense_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم تسجيل المصروف وإنشاء القيد. المعرف: {expense_id}", parent=_root)
     _prompt_form("تسجيل مصروف", fields, submit, note="اختر حسابًا من نوع EXPENSE وطريقة دفع مرتبطة بحساب أستاذ.")
 
 
@@ -612,7 +615,7 @@ def _open_journal_form(refresh):
             {"account_id":int(v["credit_account"]),"debit":0,"credit":amount,"description":v["description"]},
         ], svc.get_username_id(username))
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم إنشاء القيد المتوازن وترحيله. المعرف: {entry_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم إنشاء القيد المتوازن وترحيله. المعرف: {entry_id}", parent=_root)
     _prompt_form("إنشاء قيد يومية متوازن", fields, submit, note="هذا النموذج ينشئ قيدًا من سطر مدين وسطر دائن بالقيمة نفسها. القيود المرحلة غير قابلة للتعديل أو الحذف.")
 
 
@@ -624,7 +627,7 @@ def _open_payroll_form(refresh):
     def submit(v):
         run_id = svc.create_payroll_draft(v["period_start"], v["period_end"], svc.get_username_id(username))
         refresh(); _refresh_dashboard()
-        messagebox.showinfo("تم", f"تم إنشاء مسودة رواتب تشمل الموظفين النشطين. المعرف: {run_id}", parent=_root)
+        dialogs.showinfo("تم", f"تم إنشاء مسودة رواتب تشمل الموظفين النشطين. المعرف: {run_id}", parent=_root)
     _prompt_form("إنشاء مسودة مسير رواتب", fields, submit, note="تنشأ قسائم أولية على أساس الأجر الأساسي فقط. لم يتم تفعيل ترحيل الرواتب أو الدفع آليًا لأن ذلك يتطلب سياسة خصومات/حضور وحسابات مقابلة محددة.")
 
 
@@ -632,16 +635,16 @@ def _open_role_permissions():
     colors = _appearance_colors()
     roles = svc.get_field_choices("role_id")
     if not roles:
-        messagebox.showerror("خطأ", "لا توجد أدوار", parent=_root); return
-    win = ctk.CTkToplevel(_root)
+        dialogs.showerror("خطأ", "لا توجد أدوار", parent=_root); return
+    win = QtDialog(_root)
     win.title("إدارة صلاحيات الأدوار")
     win.geometry("600x720")
     win.transient(_root); win.grab_set(); win.configure(fg_color=colors["bg"])
-    ctk.CTkLabel(win, text="إدارة صلاحيات الدور", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=12)
+    QtLabel(win, text="إدارة صلاحيات الدور", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=12)
     options = [f"{rid} — {name}" for rid, name in roles]
-    role_combo = ctk.CTkComboBox(win, values=options, width=450, state="readonly")
+    role_combo = QtComboBox(win, values=options, width=450, state="readonly")
     role_combo.pack(pady=8)
-    check_area = ctk.CTkScrollableFrame(win, fg_color=colors["card"])
+    check_area = QtScrollableFrame(win, fg_color=colors["card"])
     check_area.pack(fill="both", expand=True, padx=18, pady=12)
     state = {"vars": [], "permission_ids": [], "role_id": None}
     def load_role(_=None):
@@ -653,8 +656,8 @@ def _open_role_permissions():
         all_permissions, assigned, role = svc.get_role_permissions(role_id)
         state["role_id"] = role_id
         for perm_id, code, description in all_permissions:
-            var = tk.BooleanVar(value=perm_id in assigned)
-            box = ctk.CTkCheckBox(check_area, text=f"{code} — {description}", variable=var)
+            var = BooleanVar(value=perm_id in assigned)
+            box = QtCheckBox(check_area, text=f"{code} — {description}", variable=var)
             box.pack(fill="x", padx=8, pady=5, anchor="w")
             state["vars"].append(var); state["permission_ids"].append(perm_id)
     role_combo.configure(command=load_role)
@@ -664,15 +667,15 @@ def _open_role_permissions():
         selected = [pid for pid, var in zip(state["permission_ids"], state["vars"]) if var.get()]
         try: svc.set_role_permissions(state["role_id"], selected, svc.get_username_id(username))
         except Exception as exc:
-            messagebox.showerror("خطأ", str(exc), parent=win); return
-        messagebox.showinfo("تم", "تم تحديث صلاحيات الدور", parent=win); win.destroy()
-    ctk.CTkButton(win, text="حفظ الصلاحيات", command=save, fg_color=colors["success"]).pack(pady=(0,16))
+            dialogs.showerror("خطأ", str(exc), parent=win); return
+        dialogs.showinfo("تم", "تم تحديث صلاحيات الدور", parent=win); win.destroy()
+    QtButton(win, text="حفظ الصلاحيات", command=save, fg_color=colors["success"]).pack(pady=(0,16))
 
 
 def _resource_action_buttons(resource, toolbar, refresh, tree):
     colors = _appearance_colors()
     def add_action(label, func):
-        ctk.CTkButton(toolbar, text=label, command=func, height=34, fg_color=colors["accent"], hover_color=colors["accent_hover"]).pack(side="right", padx=4, pady=4)
+        QtButton(toolbar, text=label, command=func, height=34, fg_color=colors["accent"], hover_color=colors["accent_hover"]).pack(side="right", padx=4, pady=4)
     if resource in {"debt_log", "audit_log"}:
         add_action(
             "عرض تفاصيل السجل",
@@ -708,18 +711,18 @@ def _resource_action_buttons(resource, toolbar, refresh, tree):
             fields = [{"name":"opening_cash","label":"رصيد بداية الوردية بوحدة العملة الصغرى","type":"int","default":"0","required":True},{"name":"note","label":"ملاحظة"}]
             def submit(v):
                 svc.open_cash_shift(svc.get_username_id(username), int(v["opening_cash"]), v.get("note", "")); refresh(); _refresh_dashboard()
-                messagebox.showinfo("تم", "تم فتح الوردية", parent=_root)
+                dialogs.showinfo("تم", "تم فتح الوردية", parent=_root)
             _prompt_form("فتح وردية خزينة", fields, submit)
         def close_shift():
             vals = _selected_row(tree)
             if not vals:
-                messagebox.showwarning("تنبيه", "اختر وردية أولًا", parent=_root); return
+                dialogs.showwarning("تنبيه", "اختر وردية أولًا", parent=_root); return
             if str(vals[7]) != "OPEN":
-                messagebox.showwarning("تنبيه", "الوردية المحددة ليست مفتوحة", parent=_root); return
+                dialogs.showwarning("تنبيه", "الوردية المحددة ليست مفتوحة", parent=_root); return
             fields = [{"name":"closing_cash","label":"النقد الفعلي عند الإغلاق بوحدة العملة الصغرى","type":"int","required":True}]
             def submit(v):
                 expected = svc.close_cash_shift(int(vals[0]), int(v["closing_cash"]), svc.get_username_id(username)); refresh(); _refresh_dashboard()
-                messagebox.showinfo("تم", f"تم إغلاق الوردية. النقد المتوقع من المدفوعات والمصروفات المسجلة: {expected}", parent=_root)
+                dialogs.showinfo("تم", f"تم إغلاق الوردية. النقد المتوقع من المدفوعات والمصروفات المسجلة: {expected}", parent=_root)
             _prompt_form("إغلاق الوردية", fields, submit)
         add_action("فتح وردية", open_shift); add_action("إغلاق الوردية المحددة", close_shift)
     elif resource == "expenses":
@@ -729,16 +732,16 @@ def _resource_action_buttons(resource, toolbar, refresh, tree):
         def reverse_selected_journal():
             vals = _selected_row(tree)
             if not vals:
-                messagebox.showwarning("تنبيه", "اختر قيدًا أولًا", parent=_root)
+                dialogs.showwarning("تنبيه", "اختر قيدًا أولًا", parent=_root)
                 return
             if str(vals[6]) != "POSTED":
-                messagebox.showwarning("تنبيه", "اختر قيدًا مرحلًا وغير معكوس", parent=_root)
+                dialogs.showwarning("تنبيه", "اختر قيدًا مرحلًا وغير معكوس", parent=_root)
                 return
             reason_win_fields = [{"name":"reason","label":"سبب العكس","required":True}]
             def submit(v):
                 reversal_id = svc.reverse_manual_journal(int(vals[0]), svc.get_username_id(username), v["reason"])
                 refresh(); _refresh_dashboard()
-                messagebox.showinfo("تم", f"تم إنشاء قيد العكس رقم المعرف {reversal_id}", parent=_root)
+                dialogs.showinfo("تم", f"تم إنشاء قيد العكس رقم المعرف {reversal_id}", parent=_root)
             _prompt_form("عكس قيد يومية يدوي", reason_win_fields, submit,
                          note="يُنشأ قيد جديد بعكس المدين والدائن. لا يتم حذف أو تعديل بنود القيد الأصلي، ولا يمكن عكس القيود التشغيلية من هذه الشاشة.")
         add_action("عكس قيد يدوي", reverse_selected_journal)
@@ -751,9 +754,9 @@ def _resource_action_buttons(resource, toolbar, refresh, tree):
 def open_resource_window(resource: str):
     cfg = svc.RESOURCE_CONFIG.get(resource)
     if not cfg:
-        messagebox.showerror("خطأ", "هذه الشاشة غير مسجلة", parent=_root); return
+        dialogs.showerror("خطأ", "هذه الشاشة غير مسجلة", parent=_root); return
     colors = _appearance_colors()
-    win = ctk.CTkToplevel(_root)
+    win = QtDialog(_root)
     win.title(cfg["title"])
     win.geometry("1250x720")
     win.minsize(850, 520)
@@ -761,27 +764,27 @@ def open_resource_window(resource: str):
     win.transient(_root)
     _style_treeview()
 
-    header = ctk.CTkFrame(win, fg_color=colors["card"], corner_radius=12)
+    header = QtFrame(win, fg_color=colors["card"], corner_radius=12)
     header.pack(fill="x", padx=16, pady=(16, 8))
-    ctk.CTkLabel(header, text=cfg["title"], font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(side="right", padx=14, pady=10)
+    QtLabel(header, text=cfg["title"], font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(side="right", padx=14, pady=10)
 
-    toolbar = ctk.CTkFrame(win, fg_color="transparent")
+    toolbar = QtFrame(win, fg_color="transparent")
     toolbar.pack(fill="x", padx=16, pady=4)
-    search_var = tk.StringVar()
-    search_entry = ctk.CTkEntry(toolbar, textvariable=search_var, placeholder_text="بحث...", width=280, height=34, justify="right")
+    search_var = StringVar()
+    search_entry = QtLineEdit(toolbar, textvariable=search_var, placeholder_text="بحث...", width=280, height=34, justify="right")
     search_entry.pack(side="right", padx=4)
 
-    table_frame = ctk.CTkFrame(win, fg_color=colors["card"], corner_radius=10)
+    table_frame = QtFrame(win, fg_color=colors["card"], corner_radius=10)
     table_frame.pack(fill="both", expand=True, padx=16, pady=(4, 16))
-    tree_holder = tk.Frame(table_frame, bd=0, highlightthickness=0, bg=colors["card"])
+    tree_holder = QtFrame(table_frame, bd=0, highlightthickness=0, bg=colors["card"])
     tree_holder.pack(fill="both", expand=True, padx=8, pady=8)
     columns = [f"c{i}" for i in range(len(cfg["columns"]))]
     # RTL: display columns in reverse order (first column, usually ID, on the right).
     # Item values keep their original order, so vals[0] is still the record ID.
-    tree = ttk.Treeview(tree_holder, columns=columns, displaycolumns=columns[::-1],
+    tree = QtTreeWidget(tree_holder, columns=columns, displaycolumns=columns[::-1],
                         show="headings", style="Admin.Treeview")
-    vscroll = ttk.Scrollbar(tree_holder, orient="vertical", command=tree.yview)
-    hscroll = ttk.Scrollbar(tree_holder, orient="horizontal", command=tree.xview)
+    vscroll = QtScrollBar(tree_holder, orient="vertical", command=tree.yview)
+    hscroll = QtScrollBar(tree_holder, orient="horizontal", command=tree.xview)
     tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
     vscroll.grid(row=0, column=0, sticky="ns")
     tree.grid(row=0, column=1, sticky="nsew")
@@ -795,39 +798,39 @@ def open_resource_window(resource: str):
         try:
             rows = svc.list_resource(resource, search_var.get())
         except Exception as exc:
-            messagebox.showerror("خطأ في قراءة البيانات", str(exc), parent=win)
+            dialogs.showerror("خطأ في قراءة البيانات", str(exc), parent=win)
             return
         tree.delete(*tree.get_children())
         for row in rows:
             tree.insert("", "end", values=["" if v is None else v for v in row])
         count_label.configure(text=f"عدد السجلات: {len(rows)}")
 
-    count_label = ctk.CTkLabel(toolbar, text="", text_color=colors["subtext"])
+    count_label = QtLabel(toolbar, text="", text_color=colors["subtext"])
     count_label.pack(side="left", padx=8)
-    ctk.CTkButton(toolbar, text="تحديث", width=80, command=refresh, height=34).pack(side="left", padx=3)
+    QtButton(toolbar, text="تحديث", width=80, command=refresh, height=34).pack(side="left", padx=3)
     search_entry.bind("<Return>", lambda _e: refresh())
 
     if cfg.get("editable"):
-        ctk.CTkButton(toolbar, text="إضافة", width=90, height=34, fg_color=colors["success"],
+        QtButton(toolbar, text="إضافة", width=90, height=34, fg_color=colors["success"],
                       command=lambda: _open_entity_editor(resource, refresh_callback=refresh)).pack(side="left", padx=3)
         def edit_selected():
             vals = _selected_row(tree)
             if not vals:
-                messagebox.showwarning("تنبيه", "اختر سجلًا للتعديل", parent=win); return
+                dialogs.showwarning("تنبيه", "اختر سجلًا للتعديل", parent=win); return
             _open_entity_editor(resource, _parse_record_id(resource, vals[0]), refresh_callback=refresh)
-        ctk.CTkButton(toolbar, text="تعديل", width=90, height=34, command=edit_selected).pack(side="left", padx=3)
+        QtButton(toolbar, text="تعديل", width=90, height=34, command=edit_selected).pack(side="left", padx=3)
         if resource not in {"settings", "doc_sequences", "product_barcodes", "roles"}:
             def deactivate_selected():
                 vals = _selected_row(tree)
                 if not vals:
-                    messagebox.showwarning("تنبيه", "اختر سجلًا أولًا", parent=win); return
+                    dialogs.showwarning("تنبيه", "اختر سجلًا أولًا", parent=win); return
                 record_id = _parse_record_id(resource, vals[0])
-                if not messagebox.askyesno("تأكيد", "هل تريد تعطيل هذا السجل؟ لن يتم حذفه من قاعدة البيانات.", parent=win): return
+                if not dialogs.askyesno("تأكيد", "هل تريد تعطيل هذا السجل؟ لن يتم حذفه من قاعدة البيانات.", parent=win): return
                 try:
                     svc.deactivate_entity(resource, int(record_id), user_id=svc.get_username_id(username)); refresh(); _refresh_dashboard()
                 except Exception as exc:
-                    messagebox.showerror("تعذر التعطيل", str(exc), parent=win)
-            ctk.CTkButton(toolbar, text="تعطيل", width=90, height=34, fg_color=colors["danger"], command=deactivate_selected).pack(side="left", padx=3)
+                    dialogs.showerror("تعذر التعطيل", str(exc), parent=win)
+            QtButton(toolbar, text="تعطيل", width=90, height=34, fg_color=colors["danger"], command=deactivate_selected).pack(side="left", padx=3)
 
     _resource_action_buttons(resource, toolbar, refresh, tree)
     def handle_tree_double_click(_event=None):
@@ -886,18 +889,18 @@ def open_debt_log_page():
 
 def open_statistics_page():
     colors = _appearance_colors()
-    win = ctk.CTkToplevel(_root)
+    win = QtDialog(_root)
     win.title("التقارير والتدقيق")
     win.geometry("520x560")
     win.configure(fg_color=colors["bg"])
     win.transient(_root); win.grab_set()
-    ctk.CTkLabel(win, text="التقارير والتدقيق", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=18)
+    QtLabel(win, text="التقارير والتدقيق", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=18)
     for label, resource in [("الأصناف منخفضة المخزون", "low_stock_products"), ("تقييم تقريبي للمخزون", "stock_valuation"),
                             ("أرصدة العملاء", "customer_balances"), ("أرصدة الموردين", "supplier_balances"),
                             ("القيود غير المتوازنة", "unbalanced_entries"), ("سجل التدقيق", "audit_log")]:
-        ctk.CTkButton(win, text=label, height=42, command=lambda r=resource: open_resource_window(r),
+        QtButton(win, text=label, height=42, command=lambda r=resource: open_resource_window(r),
                       fg_color=colors["accent"]).pack(fill="x", padx=36, pady=5)
-    ctk.CTkButton(win, text="إغلاق", command=win.destroy, fg_color="#6b7280").pack(pady=18)
+    QtButton(win, text="إغلاق", command=win.destroy, fg_color="#6b7280").pack(pady=18)
 
 
 def open_sells_admin():
@@ -909,46 +912,51 @@ def open_users_controll():
 
 
 def open_admin(root):
-    """Build the dashboard in the supplied Tk/CustomTkinter root."""
+    """Build the dashboard in the supplied PySide6 BaseWindow/QMainWindow."""
     global _root, _dashboard_refresh
     _root = root
     colors = _appearance_colors()
-    for widget in root.winfo_children():
-        widget.destroy()
-    try:
-        root.configure(fg_color=colors["bg"])
-    except Exception:
-        try: root.configure(bg=colors["bg"])
-        except Exception: pass
 
-    shell = ctk.CTkFrame(root, fg_color=colors["bg"], corner_radius=0)
-    shell.pack(fill="both", expand=True)
+    # A QMainWindow must receive its page through setCentralWidget/set_page.
+    # For an ordinary QWidget host, the page is installed with a Qt layout.
+    from PySide6.QtWidgets import QMainWindow
+    if isinstance(root, QMainWindow):
+        shell = QtFrame(None, fg_color=colors["bg"], corner_radius=0)
+        if hasattr(root, "set_page"):
+            root.set_page(shell)
+        else:
+            root.setCentralWidget(shell)
+    else:
+        for widget in root.winfo_children():
+            widget.destroy()
+        shell = QtFrame(root, fg_color=colors["bg"], corner_radius=0)
+        shell.pack(fill="both", expand=True)
 
-    header = ctk.CTkFrame(shell, fg_color=colors["accent"], corner_radius=0, height=76)
+    header = QtFrame(shell, fg_color=colors["accent"], corner_radius=0, height=76)
     header.pack(fill="x")
     header.pack_propagate(False)
-    ctk.CTkLabel(header, text="لوحة تحكم MyShop ERP", font=("Segoe UI", 26, "bold"), text_color="#ffffff").pack(side="right", padx=24, pady=18)
-    ctk.CTkLabel(header, text=f"المستخدم: {username or 'غير معروف'}", font=("Segoe UI", 14), text_color="#ffffff").pack(side="left", padx=24)
+    QtLabel(header, text="لوحة تحكم MyShop ERP", font=("Segoe UI", 26, "bold"), text_color="#ffffff").pack(side="right", padx=24, pady=18)
+    QtLabel(header, text=f"المستخدم: {username or 'غير معروف'}", font=("Segoe UI", 14), text_color="#ffffff").pack(side="left", padx=24)
 
-    body = ctk.CTkFrame(shell, fg_color="transparent")
+    body = QtFrame(shell, fg_color="transparent")
     body.pack(fill="both", expand=True, padx=18, pady=16)
-    nav = ctk.CTkScrollableFrame(body, width=300, fg_color=colors["card"], corner_radius=12)
+    nav = QtScrollableFrame(body, width=300, fg_color=colors["card"], corner_radius=12)
     nav.pack(side="right", fill="y", padx=(12, 0))
-    content = ctk.CTkScrollableFrame(body, fg_color="transparent", corner_radius=12)
+    content = QtScrollableFrame(body, fg_color="transparent", corner_radius=12)
     content.pack(side="left", fill="both", expand=True)
 
-    ctk.CTkLabel(nav, text="الوحدات", font=("Segoe UI", 20, "bold"), text_color=colors["text"]).pack(fill="x", padx=12, pady=(12, 6))
+    QtLabel(nav, text="الوحدات", font=("Segoe UI", 20, "bold"), text_color=colors["text"]).pack(fill="x", padx=12, pady=(12, 6))
     for group, resources in ADMIN_GROUPS:
-        ctk.CTkLabel(nav, text=group, font=("Segoe UI", 13, "bold"), text_color=colors["subtext"], anchor="e").pack(fill="x", padx=12, pady=(12, 4))
+        QtLabel(nav, text=group, font=("Segoe UI", 13, "bold"), text_color=colors["subtext"], anchor="e").pack(fill="x", padx=12, pady=(12, 4))
         for label, resource in resources:
-            ctk.CTkButton(nav, text=fix(label), anchor="e", height=34, fg_color="transparent", text_color=colors["text"],
+            QtButton(nav, text=label, anchor="e", height=34, fg_color="transparent", text_color=colors["text"],
                           hover_color=colors["border"], command=lambda r=resource: open_resource_window(r)).pack(fill="x", padx=8, pady=2)
 
-    ctk.CTkLabel(content, text="نظرة عامة", font=("Segoe UI", 25, "bold"), text_color=colors["text"]).pack(anchor="e", padx=6, pady=(2, 10))
-    ctk.CTkLabel(content, text="اختر وحدة من القائمة للوصول إلى جداول النظام وإجراءاته. القيود والمخزون المرحل لا يُعدلان من جداول العرض مباشرة.",
+    QtLabel(content, text="نظرة عامة", font=("Segoe UI", 25, "bold"), text_color=colors["text"]).pack(anchor="e", padx=6, pady=(2, 10))
+    QtLabel(content, text="اختر وحدة من القائمة للوصول إلى جداول النظام وإجراءاته. القيود والمخزون المرحل لا يُعدلان من جداول العرض مباشرة.",
                   font=("Segoe UI", 13), text_color=colors["subtext"], wraplength=900, justify="right").pack(anchor="e", fill="x", padx=6, pady=(0, 14))
 
-    cards_frame = ctk.CTkFrame(content, fg_color="transparent")
+    cards_frame = QtFrame(content, fg_color="transparent")
     cards_frame.pack(fill="x", expand=False)
     for col in range(3): cards_frame.grid_columnconfigure(col, weight=1)
     stats_config = [
@@ -960,18 +968,18 @@ def open_admin(root):
     ]
     stat_labels = {}
     for i, (key, label, resource) in enumerate(stats_config):
-        card = ctk.CTkFrame(cards_frame, fg_color=colors["card"], corner_radius=12, border_width=1, border_color=colors["border"])
+        card = QtFrame(cards_frame, fg_color=colors["card"], corner_radius=12, border_width=1, border_color=colors["border"])
         # RTL: fill each row of cards starting from the right.
         card.grid(row=i // 3, column=2 - (i % 3), sticky="nsew", padx=6, pady=6)
-        ctk.CTkLabel(card, text=label, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=190).pack(padx=12, pady=(14, 4))
-        value = ctk.CTkLabel(card, text="—", font=("Segoe UI", 23, "bold"), text_color=colors["text"])
+        QtLabel(card, text=label, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=190).pack(padx=12, pady=(14, 4))
+        value = QtLabel(card, text="—", font=("Segoe UI", 23, "bold"), text_color=colors["text"])
         value.pack(padx=12, pady=(0, 6))
-        ctk.CTkButton(card, text="فتح", height=28, fg_color=colors["accent"], command=lambda r=resource: open_resource_window(r)).pack(padx=12, pady=(0, 12))
+        QtButton(card, text="فتح", height=28, fg_color=colors["accent"], command=lambda r=resource: open_resource_window(r)).pack(padx=12, pady=(0, 12))
         stat_labels[key] = value
 
-    quick = ctk.CTkFrame(content, fg_color=colors["card"], corner_radius=12)
+    quick = QtFrame(content, fg_color=colors["card"], corner_radius=12)
     quick.pack(fill="x", padx=6, pady=(14, 6))
-    ctk.CTkLabel(quick, text="إجراءات سريعة", font=("Segoe UI", 18, "bold"), text_color=colors["text"]).pack(anchor="e", padx=14, pady=(12, 8))
+    QtLabel(quick, text="إجراءات سريعة", font=("Segoe UI", 18, "bold"), text_color=colors["text"]).pack(anchor="e", padx=14, pady=(12, 8))
     quick_buttons = [
         ("تسوية مخزون", lambda: _open_stock_adjustment(_refresh_dashboard)),
         ("تسجيل بيع", lambda: _open_sale_form(lambda: None)),
@@ -980,17 +988,17 @@ def open_admin(root):
         ("تسجيل مصروف", lambda: _open_expense_form(lambda: None)),
         ("قيد يومية", lambda: _open_journal_form(lambda: None)),
     ]
-    quick_row = ctk.CTkFrame(quick, fg_color="transparent")
+    quick_row = QtFrame(quick, fg_color="transparent")
     quick_row.pack(fill="x", padx=8, pady=(0, 12))
     for label, command in quick_buttons:
-        ctk.CTkButton(quick_row, text=fix(label), command=command, height=36, fg_color=colors["accent"]).pack(side="right", expand=True, fill="x", padx=4)
+        QtButton(quick_row, text=label, command=command, height=36, fg_color=colors["accent"]).pack(side="right", expand=True, fill="x", padx=4)
 
-    footer = ctk.CTkFrame(shell, fg_color=colors["card"], height=54, corner_radius=0)
+    footer = QtFrame(shell, fg_color=colors["card"], height=54, corner_radius=0)
     footer.pack(fill="x", side="bottom")
     footer.pack_propagate(False)
-    ctk.CTkButton(footer, text="خروج", width=100, fg_color=colors["danger"], command=root.destroy).pack(side="left", padx=12, pady=8)
-    ctk.CTkButton(footer, text="تبديل المستخدم", width=140, fg_color="#6b7280", command=lambda: [shell.destroy(), go_login(root)]).pack(side="left", padx=6, pady=8)
-    ctk.CTkLabel(footer, text="MyShop ERP — MySQL 8", text_color=colors["subtext"]).pack(side="right", padx=18)
+    QtButton(footer, text="خروج", width=100, fg_color=colors["danger"], command=root.close).pack(side="left", padx=12, pady=8)
+    QtButton(footer, text="تبديل المستخدم", width=140, fg_color="#6b7280", command=lambda: go_login(root)).pack(side="left", padx=6, pady=8)
+    QtLabel(footer, text="MyShop ERP — MySQL 8", text_color=colors["subtext"]).pack(side="right", padx=18)
 
     def refresh_dashboard():
         try:
@@ -999,7 +1007,7 @@ def open_admin(root):
                 value = stats.get(key, 0)
                 label.configure(text=f"{value:,}" if isinstance(value, (int, float)) else str(value))
         except Exception as exc:
-            messagebox.showerror("تعذر تحميل الملخص", str(exc), parent=root)
+            dialogs.showerror("تعذر تحميل الملخص", str(exc), parent=root)
     _dashboard_refresh = refresh_dashboard
     refresh_dashboard()
     return shell

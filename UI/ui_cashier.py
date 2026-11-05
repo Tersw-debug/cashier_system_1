@@ -1,127 +1,107 @@
-from tkinter import *
-import customtkinter
-from Services.admin_service import *
-from UI.router import go_login
-from tkinter import messagebox
-import customtkinter as ctk
-import os
+"""Cashier page (PySide6)."""
+from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+)
+
+from UI.basewindow import BaseWindow, is_dark
+from UI.router import go_login
 from .sell_ui import build_sell_ui
 
+THEME = {
+    "Dark": {
+        "bg": "#121212", "card": "#1e1e1e", "text": "#ffffff",
+        "button_fg": "#1f3b4d", "button_hover": "#2c526a",
+        "danger": "#e74c3c", "bottom_bg": "#1e1e1e",
+    },
+    "Light": {
+        "bg": "#f4f6f8", "card": "#ffffff", "text": "#000000",
+        "button_fg": "#1f3b4d", "button_hover": "#2c526a",
+        "danger": "#e74c3c", "bottom_bg": "#ffffff",
+    },
+}
 
-def open_cashier(root, username):
-    appearance = customtkinter.get_appearance_mode()
 
-    theme = {
-        "Dark": {
-            "bg": "#121212",
-            "card": "#1e1e1e",
-            "text": "#ffffff",
-            "button_fg": "#1f3b4d",
-            "button_hover": "#2c526a",
-            "danger": "#e74c3c",
-            "bottom_bg": "#1e1e1e",
-        },
-        "Light": {
-            "bg": "#f4f6f8",
-            "card": "#ffffff",
-            "text": "#000000",
-            "button_fg": "#1f3b4d",
-            "button_hover": "#2c526a",
-            "danger": "#e74c3c",
-            "bottom_bg": "#ffffff",
-        }
-    }
+def _button(text: str, bg: str, hover: str, on_click, fg: str = "white") -> QPushButton:
+    btn = QPushButton(text)
+    btn.setCursor(Qt.PointingHandCursor)
+    btn.setStyleSheet(
+        f"QPushButton {{ background:{bg}; color:{fg}; border:none;"
+        f" border-radius:6px; padding:8px 18px; font:18px 'Arial'; }}"
+        f"QPushButton:hover {{ background:{hover}; }}"
+    )
+    btn.clicked.connect(lambda _checked=False: on_click())
+    return btn
 
-    colors = theme[appearance]
 
-    # clear root
-    for widget in root.winfo_children():
-        widget.destroy()
+def open_cashier(root: BaseWindow, username: str) -> QWidget:
+    colors = THEME["Dark" if is_dark() else "Light"]
 
-    # ===== MAIN FRAME =====
-    cashier = customtkinter.CTkFrame(root, fg_color=colors['bg'])
-    cashier.pack(fill=BOTH, expand=True)
+    # ===== MAIN PAGE =====
+    page = QWidget()
+    page.setObjectName("cashierPage")
+    page.setStyleSheet(f"#cashierPage {{ background:{colors['bg']}; }}")
+    page_layout = QVBoxLayout(page)
+    page_layout.setContentsMargins(0, 0, 0, 0)
+    page_layout.setSpacing(0)
 
     # ===== HEADER =====
-    header = customtkinter.CTkFrame(
-        cashier,
-        height=80,
-        fg_color=colors["button_fg"]
-    )
-    header.pack(fill="x")
+    # Layouts are mirrored (RTL), so the first widget added sits on the RIGHT.
+    # Physical placement matches the old screen: user on the right, title on the left.
+    header = QFrame()
+    header.setObjectName("header")
+    header.setFixedHeight(80)
+    header.setStyleSheet(f"#header {{ background:{colors['button_fg']}; }}")
+    header_layout = QHBoxLayout(header)
+    header_layout.setContentsMargins(20, 0, 20, 0)
 
-    customtkinter.CTkLabel(
-        header,
-        text="صفحة الكاشير",
-        font=("Segoe UI", 30, "bold"),
-        text_color=colors["text"]
-    ).pack(side=LEFT, padx=20)
+    user_label = QLabel(f"👤 {username}")
+    user_label.setStyleSheet(f"color:{colors['text']}; font:20px 'Segoe UI';")
+    title_label = QLabel("صفحة الكاشير")
+    title_label.setStyleSheet(f"color:{colors['text']}; font:bold 30px 'Segoe UI';")
 
-    customtkinter.CTkLabel(
-        header,
-        text=f"👤 {username}",
-        font=("Segoe UI", 20),
-        text_color=colors["text"]
-    ).pack(side=RIGHT, padx=20)
+    header_layout.addWidget(user_label)
+    header_layout.addStretch(1)
+    header_layout.addWidget(title_label)
+    page_layout.addWidget(header)
 
-    # ===== CONTENT =====
-    content = customtkinter.CTkFrame(cashier, fg_color="transparent")
-    content.pack(fill=BOTH, expand=True, padx=20, pady=20)
+    # ===== CONTENT (sell UI is mounted here) =====
+    content = QWidget()
+    content_layout = QVBoxLayout(content)
+    content_layout.setContentsMargins(20, 20, 20, 20)
+    page_layout.addWidget(content, 1)
 
-    # 🔥 HERE IS THE MAGIC
-    """  try:
-        initialized = build_sell_ui(content, username)
-    except Exception as exc:
-        messagebox.showerror(
-            "تعذر فتح الكاشير",
-            f"{type(exc).__name__}: {exc}",
-            parent=root,
-        )
-        initialized = False
+    # build_sell_ui must be ported to take this QWidget (it adds its own layout).
+    if not build_sell_ui(content, username):
+        fallback = QLabel("تعذر تحميل نقطة البيع. راجع رسالة الخطأ ثم حاول مرة أخرى.")
+        fallback.setWordWrap(True)
+        fallback.setAlignment(Qt.AlignCenter)
+        fallback.setStyleSheet("font:16px 'Segoe UI';")
+        content_layout.addWidget(fallback)
 
-    if not initialized:
-        # Don't leave an empty POS area.
-        for widget in content.winfo_children():
-            widget.destroy()
-
-        ctk.CTkLabel(
-            content,
-            text="تعذر تحميل نقطة البيع. راجع رسالة الخطأ ثم حاول مرة أخرى.",
-            font=("Segoe UI", 16),
-            wraplength=600,
-        ).pack(padx=20, pady=30) """
-
-    build_sell_ui(content, username)
     # ===== BOTTOM BAR =====
-    bottom = customtkinter.CTkFrame(
-        cashier,
-        fg_color=colors["bottom_bg"],
-        height=60
-    )
-    bottom.pack(fill=X, side=BOTTOM)
+    bottom = QFrame()
+    bottom.setObjectName("bottom")
+    bottom.setFixedHeight(60)
+    bottom.setStyleSheet(f"#bottom {{ background:{colors['bottom_bg']}; }}")
+    bottom_layout = QHBoxLayout(bottom)
+    bottom_layout.setContentsMargins(10, 0, 20, 0)
+    bottom_layout.setSpacing(10)
 
-    customtkinter.CTkButton(
-        bottom,
-        text="X خروج",
-        command=root.destroy,
-        fg_color=colors["danger"],
-        text_color="white",
-        font=("Arial", 18)
-    ).pack(side=LEFT, padx=10, pady=10)
+    welcome = QLabel(f"أهلاً بك : {username}")
+    welcome.setStyleSheet(f"color:{colors['text']}; font:18px 'Arial';")
 
-    customtkinter.CTkButton(
-        bottom,
-        text="تبديل المستخدم",
-        command=lambda: [cashier.destroy(), go_login(root)],
-        fg_color="gray",
-        text_color="white",
-        font=("Arial", 18)
-    ).pack(side=LEFT, padx=10, pady=10)
+    switch_btn = _button("تبديل المستخدم", "gray", "#6b6b6b", lambda: go_login(root))
+    exit_btn = _button("✕ خروج", colors["danger"], "#c0392b", root.close)
 
-    customtkinter.CTkLabel(
-        bottom,
-        text=f"{username} : أهلاً بك",
-        font=("Arial", 18),
-        text_color=colors["text"]
-    ).pack(side=RIGHT, padx=20)
+    # Right -> left: welcome, (stretch), switch user, exit  => exit ends up far left.
+    bottom_layout.addWidget(welcome)
+    bottom_layout.addStretch(1)
+    bottom_layout.addWidget(switch_btn)
+    bottom_layout.addWidget(exit_btn)
+    page_layout.addWidget(bottom)
+
+    root.set_page(page)  # replaces the previous page (login) and frees it
+    return page

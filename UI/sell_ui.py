@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from tkinter import BOTH, CENTER, END, LEFT, RIGHT, X, Y, StringVar, BooleanVar
-from tkinter import ttk, messagebox
 import os
 import subprocess
 import sys
-import customtkinter as ctk
-from UI.rtl import fix
+from UI.qt_compat import (
+    BOTH, CENTER, END, LEFT, RIGHT, X, Y,
+    StringVar, BooleanVar,
+    QtFrame, QtLabel, QtButton, QtLineEdit, QtComboBox, QtCheckBox,
+    QtScrollableFrame, QtTextEdit, QtDialog, QtTreeWidget, QtScrollBar,
+    QtStyle, TclError, dialogs, colorchooser,
+)
+from UI.common import is_dark
 from Services.cashier_service import (
     add_customer_debt,          # NEW
     close_cashier_shift,
@@ -98,13 +102,21 @@ def _unique_labels(rows, label_builder):
 
 
 def build_sell_ui(parent, username):
-    """Mount the cashier UI; return True on success, False on setup failure."""
+    """Mount the cashier UI into a QWidget or the supplied PySide6 main window."""
+    from PySide6.QtWidgets import QMainWindow
+    if isinstance(parent, QMainWindow):
+        page = QtFrame(None)
+        if hasattr(parent, "set_page"):
+            parent.set_page(page)
+        else:
+            parent.setCentralWidget(page)
+        parent = page
     top = parent.winfo_toplevel()
 
     try:
         cashier_id = get_username_id(str(username))
     except Exception as exc:
-        messagebox.showerror(
+        dialogs.showerror(
             "تعذر فتح الكاشير",
             f"تعذر الوصول إلى حساب الكاشير:\n{type(exc).__name__}: {exc}",
             parent=top,
@@ -112,18 +124,18 @@ def build_sell_ui(parent, username):
         return False
 
     if cashier_id is None:
-        messagebox.showerror(
+        dialogs.showerror(
             "خطأ تسجيل الدخول",
             f"لم يتم العثور على حساب مستخدم نشط باسم: {username}",
             parent=top,
         )
         return False
 
-    appearance = ctk.get_appearance_mode()
-    bg = "#121212" if appearance == "Dark" else "#f4f6f8"
-    card = "#1e1e1e" if appearance == "Dark" else "#ffffff"
-    text = "#ffffff" if appearance == "Dark" else "#101820"
-    muted = "#aab4be" if appearance == "Dark" else "#59636e"
+    dark = is_dark()
+    bg = "#121212" if dark else "#f4f6f8"
+    card = "#1e1e1e" if dark else "#ffffff"
+    text = "#ffffff" if dark else "#101820"
+    muted = "#aab4be" if dark else "#59636e"
 
     for widget in parent.winfo_children():
         widget.destroy()
@@ -131,7 +143,7 @@ def build_sell_ui(parent, username):
     try:
         context = get_cashier_context(cashier_id)
     except Exception as exc:
-        messagebox.showerror(
+        dialogs.showerror(
             "خطأ قاعدة البيانات",
             f"تعذر تحميل بيانات الكاشير:\n{type(exc).__name__}: {exc}",
             parent=top,
@@ -141,14 +153,14 @@ def build_sell_ui(parent, username):
     warehouses = context.get("warehouses", [])
     methods = context.get("payment_methods", [])
     if not warehouses:
-        messagebox.showerror(
+        dialogs.showerror(
             "لا يوجد مخزن",
             "أضف مخزنًا نشطًا من صفحة الإدارة قبل البيع.",
             parent=top,
         )
         return False
     if not methods:
-        messagebox.showerror(
+        dialogs.showerror(
             "لا توجد طرق دفع",
             "أضف طريقة دفع نشطة مرتبطة بحساب أستاذ نشط.",
             parent=top,
@@ -196,18 +208,18 @@ def build_sell_ui(parent, username):
     cart: dict[int, dict] = {}
 
     # ---------------- main layout ----------------
-    main = ctk.CTkFrame(parent, fg_color="transparent")
+    main = QtFrame(parent, fg_color="transparent")
     main.pack(fill=BOTH, expand=True, padx=12, pady=12)
 
-    toolbar = ctk.CTkFrame(main, fg_color=card, corner_radius=12)
+    toolbar = QtFrame(main, fg_color=card, corner_radius=12)
     toolbar.pack(fill=X, pady=(0, 10))
-    ctk.CTkLabel(
+    QtLabel(
         toolbar, text="نقطة البيع", font=("Segoe UI", 23, "bold"), text_color=text
     ).pack(side=RIGHT, padx=14, pady=8)
-    ctk.CTkLabel(toolbar, text="المخزن", text_color=text).pack(
+    QtLabel(toolbar, text="المخزن", text_color=text).pack(
         side=RIGHT, padx=(8, 2)
     )
-    warehouse_menu = ctk.CTkComboBox(
+    warehouse_menu = QtComboBox(
         toolbar,
         variable=warehouse_var,
         values=list(warehouse_labels),
@@ -215,33 +227,33 @@ def build_sell_ui(parent, username):
         width=190,
     )
     warehouse_menu.pack(side=RIGHT, padx=4, pady=8)
-    shift_status_label = ctk.CTkLabel(
+    shift_status_label = QtLabel(
         toolbar, textvariable=shift_text_var, text_color=muted
     )
     shift_status_label.pack(side=LEFT, padx=8)
-    shift_button = ctk.CTkButton(toolbar, text=fix("الوردية بدء"), width=120)
+    shift_button = QtButton(toolbar, text="الوردية بدء", width=120)
     shift_button.pack(side=LEFT, padx=10, pady=8)
 
-    content = ctk.CTkFrame(main, fg_color="transparent")
+    content = QtFrame(main, fg_color="transparent")
     content.pack(fill=BOTH, expand=True)
 
-    quick = ctk.CTkFrame(content, fg_color=card, corner_radius=12, width=250)
+    quick = QtFrame(content, fg_color=card, corner_radius=12, width=250)
     quick.pack(side=LEFT, fill=Y, padx=(0, 8))
     quick.pack_propagate(False)
-    ctk.CTkLabel(
+    QtLabel(
         quick, text="الأصناف السريعة", font=("Arial", 18, "bold"), text_color=text
     ).pack(pady=(10, 2))
-    quick_scroll = ctk.CTkScrollableFrame(quick, fg_color="transparent")
+    quick_scroll = QtScrollableFrame(quick, fg_color="transparent")
     quick_scroll.pack(fill=BOTH, expand=True, padx=6, pady=6)
 
-    center = ctk.CTkFrame(content, fg_color=card, corner_radius=12)
+    center = QtFrame(content, fg_color=card, corner_radius=12)
     center.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 8))
 
     # Keep the fixed-width panel separate from its scrolling content. Applying
     # pack_propagate(False) directly to a CTkScrollableFrame can leave its inner
-    # canvas/window with an unusable requested size on some CustomTkinter versions,
-    # making the panel look empty even though its child widgets were created.
-    controls = ctk.CTkFrame(
+    # Scroll areas keep their own content widget, so the fixed panel is separate
+    # from its scrolling body and retains a predictable minimum width.
+    controls = QtFrame(
         content, fg_color=card, corner_radius=12, width=320
     )
     # Pack the fixed right panel before the expanding center panel. Otherwise,
@@ -250,12 +262,12 @@ def build_sell_ui(parent, username):
     controls.pack(side=RIGHT, fill=Y, padx=(8, 0), before=center)
     controls.pack_propagate(False)
 
-    controls_body = ctk.CTkScrollableFrame(
+    controls_body = QtScrollableFrame(
         controls, fg_color="transparent", corner_radius=12
     )
     controls_body.pack(fill=BOTH, expand=True, padx=0, pady=0)
 
-    style = ttk.Style()
+    style = QtStyle()
     style.configure(
         "Cashier.Treeview",
         background=card,
@@ -271,9 +283,9 @@ def build_sell_ui(parent, username):
         foreground=[("selected", "#ffffff")],
     )
 
-    search_frame = ctk.CTkFrame(center, fg_color="transparent")
+    search_frame = QtFrame(center, fg_color="transparent")
     search_frame.pack(fill=X, padx=10, pady=10)
-    search_entry = ctk.CTkEntry(
+    search_entry = QtLineEdit(
         search_frame,
         textvariable=search_var,
         placeholder_text="امسح الباركود أو ابحث باسم المنتج / SKU",
@@ -282,11 +294,11 @@ def build_sell_ui(parent, username):
         justify="right",
     )
     search_entry.pack(side=RIGHT, fill=X, expand=True, padx=(0, 6))
-    add_button = ctk.CTkButton(search_frame, text="إضافة", width=75, height=38)
+    add_button = QtButton(search_frame, text="إضافة", width=75, height=38)
     add_button.pack(side=LEFT)
 
     columns = ("name", "barcode", "price", "qty", "total", "stock")
-    tree = ttk.Treeview(
+    tree = QtTreeWidget(
         center,
         columns=columns,
         show="headings",
@@ -307,31 +319,31 @@ def build_sell_ui(parent, username):
         tree.column(col, width=width, anchor=CENTER, stretch=(col == "name"))
     tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 8))
 
-    cart_actions = ctk.CTkFrame(center, fg_color="transparent")
+    cart_actions = QtFrame(center, fg_color="transparent")
     cart_actions.pack(fill=X, padx=10, pady=(0, 10))
-    ctk.CTkButton(
+    QtButton(
         cart_actions,
-        text=fix("زيادة الكمية +"),
+        text="زيادة الكمية +",
         command=lambda: change_selected_qty(1),
         width=115,
     ).pack(side=RIGHT, padx=3)
-    ctk.CTkButton(
+    QtButton(
         cart_actions,
-        text=fix("تقليل الكمية −"),
+        text="تقليل الكمية −",
         command=lambda: change_selected_qty(-1),
         width=115,
     ).pack(side=RIGHT, padx=3)
-    ctk.CTkButton(
+    QtButton(
         cart_actions,
-        text=fix("حذف الصنف"),
+        text="حذف الصنف",
         command=lambda: remove_selected(),
         width=95,
         fg_color="#a93226",
         hover_color="#922b21",
     ).pack(side=LEFT, padx=3)
-    ctk.CTkButton(
+    QtButton(
         cart_actions,
-        text=fix("تفريغ السلة"),
+        text="تفريغ السلة",
         command=lambda: clear_cart(),
         width=95,
         fg_color="#555555",
@@ -339,17 +351,17 @@ def build_sell_ui(parent, username):
     ).pack(side=LEFT, padx=3)
 
     # ---------------- control panel ----------------
-    ctk.CTkLabel(
+    QtLabel(
         controls_body,
         text="إتمام البيع",
         font=("Arial", 20, "bold"),
         text_color=text,
     ).pack(padx=12, pady=(12, 8), anchor="e")
-    ctk.CTkLabel(
+    QtLabel(
         controls_body, text="العميل", text_color=text,
         anchor="e", font=("Arial", 12, "bold"),
     ).pack(fill=X, anchor="e", padx=12, pady=(3, 4))
-    customer_menu = ctk.CTkComboBox(
+    customer_menu = QtComboBox(
         controls_body,
         variable=customer_var,
         values=list(customer_labels),
@@ -358,9 +370,9 @@ def build_sell_ui(parent, username):
     )
     customer_menu.pack(fill=X, padx=12, pady=(0, 2))
 
-    customer_mode_row = ctk.CTkFrame(controls_body, fg_color="transparent")
+    customer_mode_row = QtFrame(controls_body, fg_color="transparent")
     customer_mode_row.pack(fill=X, padx=12, pady=(8, 4))
-    new_customer_check = ctk.CTkCheckBox(
+    new_customer_check = QtCheckBox(
         customer_mode_row,
         text="تسجيل عميل جديد",
         variable=new_customer_var,
@@ -372,13 +384,13 @@ def build_sell_ui(parent, username):
     new_customer_check.pack(side=RIGHT, anchor="e")
 
     # Keep each Arabic label directly above its matching entry in one form card.
-    new_customer_frame = ctk.CTkFrame(controls_body, fg_color=bg, corner_radius=10)
+    new_customer_frame = QtFrame(controls_body, fg_color=bg, corner_radius=10)
     new_customer_frame.grid_columnconfigure(0, weight=1)
-    ctk.CTkLabel(
+    QtLabel(
         new_customer_frame, text="اسم العميل *", text_color=text,
         anchor="e", font=("Arial", 12, "bold"),
     ).pack(fill=X, padx=10, pady=(10, 2))
-    new_customer_entry = ctk.CTkEntry(
+    new_customer_entry = QtLineEdit(
         new_customer_frame,
         textvariable=new_customer_name,
         placeholder_text="اكتب اسم العميل",
@@ -386,11 +398,11 @@ def build_sell_ui(parent, username):
         justify="right",
     )
     new_customer_entry.pack(fill=X, padx=10, pady=(0, 8))
-    ctk.CTkLabel(
+    QtLabel(
         new_customer_frame, text="رقم الهاتف (اختياري)", text_color=text,
         anchor="e", font=("Arial", 12, "bold"),
     ).pack(fill=X, padx=10, pady=(0, 2))
-    new_customer_phone_entry = ctk.CTkEntry(
+    new_customer_phone_entry = QtLineEdit(
         new_customer_frame,
         textvariable=new_customer_phone,
         placeholder_text="اكتب رقم الهاتف",
@@ -399,12 +411,12 @@ def build_sell_ui(parent, username):
     )
     new_customer_phone_entry.pack(fill=X, padx=10, pady=(0, 10))
 
-    payment_label = ctk.CTkLabel(
+    payment_label = QtLabel(
         controls_body, text="طريقة الدفع", text_color=text,
         anchor="e", font=("Arial", 12, "bold"),
     )
     payment_label.pack(fill=X, anchor="e", padx=12, pady=(8, 4))
-    payment_menu = ctk.CTkComboBox(
+    payment_menu = QtComboBox(
         controls_body,
         variable=method_var,
         values=list(method_labels),
@@ -413,15 +425,15 @@ def build_sell_ui(parent, username):
     )
     payment_menu.pack(fill=X, padx=12)
 
-    ctk.CTkLabel(
+    QtLabel(
         controls_body, text="المبلغ المدفوع", text_color=text,
         anchor="e", font=("Arial", 12, "bold"),
     ).pack(fill=X, anchor="e", padx=12, pady=(10, 4))
-    paid_entry = ctk.CTkEntry(
+    paid_entry = QtLineEdit(
         controls_body, textvariable=paid_var, height=36, justify=CENTER
     )
     paid_entry.pack(fill=X, padx=12)
-    ctk.CTkLabel(
+    QtLabel(
         controls_body,
         text="بالوحدة النقدية الرئيسية؛ المبالغ تحفظ كوحدات صغرى.",
         text_color=muted,
@@ -429,10 +441,10 @@ def build_sell_ui(parent, username):
         wraplength=260,
     ).pack(anchor="e", padx=12, pady=(3, 8))
 
-    ctk.CTkLabel(
+    QtLabel(
         controls_body, text="إجمالي الفاتورة", text_color=muted, anchor="e"
     ).pack(fill=X, anchor="e", padx=12, pady=(8, 0))
-    ctk.CTkLabel(
+    QtLabel(
         controls_body,
         textvariable=total_var,
         font=("Arial", 26, "bold"),
@@ -505,7 +517,7 @@ def build_sell_ui(parent, username):
 
     def ask_product_quantity(product, on_confirm=None):
         """Ask for a product quantity before adding it to the cart."""
-        dialog = ctk.CTkToplevel(top)
+        dialog = QtDialog(top)
         dialog.title("تحديد الكمية")
         dialog.geometry("360x220")
         dialog.resizable(False, False)
@@ -513,7 +525,7 @@ def build_sell_ui(parent, username):
         dialog.grab_set()
 
         product_name = str(product[1])
-        ctk.CTkLabel(
+        QtLabel(
             dialog,
             text=f"المنتج: {product_name}",
             font=("Arial", 14, "bold"),
@@ -522,7 +534,7 @@ def build_sell_ui(parent, username):
             wraplength=320,
         ).pack(fill=X, padx=16, pady=(18, 8))
 
-        ctk.CTkLabel(
+        QtLabel(
             dialog,
             text="أدخل الكمية المطلوبة:",
             font=("Arial", 13),
@@ -531,7 +543,7 @@ def build_sell_ui(parent, username):
         ).pack(fill=X, padx=16, pady=(0, 5))
 
         quantity_var = StringVar(value="1")
-        quantity_entry = ctk.CTkEntry(
+        quantity_entry = QtLineEdit(
             dialog,
             textvariable=quantity_var,
             justify="center",
@@ -539,14 +551,14 @@ def build_sell_ui(parent, username):
         )
         quantity_entry.pack(fill=X, padx=16, pady=4)
 
-        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons = QtFrame(dialog, fg_color="transparent")
         buttons.pack(fill=X, padx=16, pady=(12, 14))
 
         def confirm_quantity():
             try:
                 qty = _quantity(quantity_var.get())
             except ValueError as exc:
-                messagebox.showerror(
+                dialogs.showerror(
                     "كمية غير صحيحة",
                     str(exc),
                     parent=dialog,
@@ -564,10 +576,10 @@ def build_sell_ui(parent, username):
             else:
                 add_product_to_cart(product, quantity_text)
 
-        ctk.CTkButton(
+        QtButton(
             buttons, text="إضافة للسلة", command=confirm_quantity
         ).pack(side=RIGHT, padx=(4, 0))
-        ctk.CTkButton(
+        QtButton(
             buttons, text="إلغاء", fg_color="#555555",
             hover_color="#444444", command=dialog.destroy
         ).pack(side=LEFT, padx=(0, 4))
@@ -580,7 +592,7 @@ def build_sell_ui(parent, username):
         try:
             qty = _quantity(raw_qty)
         except ValueError as exc:
-            messagebox.showerror(
+            dialogs.showerror(
                 "كمية غير صحيحة", str(exc), parent=top
             )
             return
@@ -599,15 +611,15 @@ def build_sell_ui(parent, username):
         if len(products) == 1:
             ask_product_quantity(products[0])
             return
-        picker = ctk.CTkToplevel(parent)
+        picker = QtDialog(parent)
         picker.title("اختر الصنف")
         picker.geometry("560x400")
         picker.transient(top)
         picker.grab_set()
-        ctk.CTkLabel(
+        QtLabel(
             picker, text=f"نتائج البحث: {len(products)}", font=("Arial", 16, "bold")
         ).pack(pady=8)
-        scroller = ctk.CTkScrollableFrame(picker)
+        scroller = QtScrollableFrame(picker)
         scroller.pack(fill=BOTH, expand=True, padx=10, pady=10)
         def select_from_picker(product):
             picker.destroy()
@@ -618,7 +630,7 @@ def build_sell_ui(parent, username):
                 f"{product[1]} | {product[3] or product[2] or '-'} | "
                 f"{minor_to_money(product[4])} | مخزون {float(product[5]):g}"
             )
-            ctk.CTkButton(
+            QtButton(
                 scroller,
                 text=label,
                 anchor="e",
@@ -632,10 +644,10 @@ def build_sell_ui(parent, username):
         try:
             products = get_cashier_products(value, current_warehouse_id())
         except Exception as exc:
-            messagebox.showerror("خطأ", str(exc), parent=top)
+            dialogs.showerror("خطأ", str(exc), parent=top)
             return "break"
         if not products:
-            messagebox.showwarning(
+            dialogs.showwarning(
                 "غير موجود",
                 "لم يتم العثور على منتج نشط بهذا الاسم أو الباركود أو SKU.",
                 parent=top,
@@ -645,7 +657,7 @@ def build_sell_ui(parent, username):
             raw_qty = qty_var.get().strip() or "1"
             _quantity(raw_qty)
         except ValueError as exc:
-            messagebox.showerror("كمية غير صحيحة", str(exc), parent=top)
+            dialogs.showerror("كمية غير صحيحة", str(exc), parent=top)
             return "break"
         # Prefer exact SKU/barcode matches. Partial-name matches need a picker.
         exact = [
@@ -720,7 +732,7 @@ def build_sell_ui(parent, username):
             customer_var.set(old if old in customer_labels else WALK_IN_LABEL)
             refresh_customer_mode()
         except Exception as exc:
-            messagebox.showerror("خطأ", str(exc), parent=top)
+            dialogs.showerror("خطأ", str(exc), parent=top)
 
     
     quick_access_state = {
@@ -748,7 +760,7 @@ def build_sell_ui(parent, username):
             groups, ungrouped = get_cashier_product_groups(warehouse_id)
         except Exception as exc:
             quick_access_state["built"] = False
-            ctk.CTkLabel(
+            QtLabel(
                 quick_scroll,
                 text=f"تعذر تحميل الأصناف:\n{exc}",
                 text_color="#e74c3c",
@@ -805,14 +817,14 @@ def build_sell_ui(parent, username):
             return paper_label
 
         for group_index, (section_name, products) in enumerate(groups):
-            group_frame = ctk.CTkFrame(
+            group_frame = QtFrame(
                 quick_scroll,
                 fg_color="transparent",
                 corner_radius=8,
             )
             group_frame.pack(fill=X, padx=3, pady=(4, 2))
 
-            ctk.CTkLabel(
+            QtLabel(
                 group_frame,
                 text=section_name,
                 text_color=text,
@@ -820,7 +832,7 @@ def build_sell_ui(parent, username):
                 anchor="e",
             ).pack(fill=X, padx=4, pady=(5, 3))
 
-            products_frame = ctk.CTkFrame(
+            products_frame = QtFrame(
                 group_frame,
                 fg_color="transparent",
             )
@@ -837,7 +849,7 @@ def build_sell_ui(parent, username):
 
                 color = _valid_hex(product[11]) if len(product) > 11 else None
 
-                button = ctk.CTkButton(
+                button = QtButton(
                     products_frame,
                     text=button_text,
                     font=("Arial", 10),
@@ -859,7 +871,7 @@ def build_sell_ui(parent, username):
                 )
 
         if not groups:
-            ctk.CTkLabel(
+            QtLabel(
                 quick_scroll,
                 text="لا توجد منتجات نشطة",
                 text_color=muted,
@@ -877,7 +889,7 @@ def build_sell_ui(parent, username):
             current_shift["row"] = None
             shift_text_var.set("تعذر تحميل حالة الوردية")
             shift_button.configure(state="disabled")
-            messagebox.showerror(
+            dialogs.showerror(
                 "خطأ قاعدة البيانات",
                 f"تعذر تحميل حالة الوردية:\n{exc}",
                 parent=top,
@@ -907,14 +919,14 @@ def build_sell_ui(parent, username):
 
     def confirm_sale():
         if not cart:
-            messagebox.showwarning(
+            dialogs.showwarning(
                 "السلة فارغة", "أضف صنفًا واحدًا على الأقل.", parent=top
             )
             return
 
         shift_row = current_shift["row"]
         if not shift_row:
-            messagebox.showwarning(
+            dialogs.showwarning(
                 "لا توجد وردية مفتوحة",
                 "ابدأ وردية الكاشير قبل إتمام البيع.",
                 parent=top,
@@ -949,7 +961,7 @@ def build_sell_ui(parent, username):
                 shift_id=int(shift_row[0]),
             )
         except Exception as exc:
-            messagebox.showerror("تعذر إتمام البيع", str(exc), parent=top)
+            dialogs.showerror("تعذر إتمام البيع", str(exc), parent=top)
             return
 
         export_path = None
@@ -974,7 +986,7 @@ def build_sell_ui(parent, username):
             message += f"\n\nتم تحديث سجل المبيعات في ملف Excel الموحد:\n{export_path}"
         elif export_error:
             message += f"\n\nتعذر إنشاء تقرير Excel، لكن الفاتورة محفوظة بالفعل:\n{export_error}"
-        messagebox.showinfo("تم البيع", message, parent=top)
+        dialogs.showinfo("تم البيع", message, parent=top)
         cart.clear()
         paid_var.set(minor_to_money(0))
         new_customer_var.set(False)
@@ -988,16 +1000,16 @@ def build_sell_ui(parent, username):
         search_entry.focus_set()
 
     def amount_dialog(title, prompt, callback, default="0"):
-        dialog = ctk.CTkToplevel(parent)
+        dialog = QtDialog(parent)
         dialog.title(title)
         dialog.geometry("340x190")
         dialog.transient(top)
         dialog.grab_set()
-        ctk.CTkLabel(dialog, text=prompt, font=("Arial", 14)).pack(
+        QtLabel(dialog, text=prompt, font=("Arial", 14)).pack(
             padx=14, pady=(18, 8)
         )
         var = StringVar(value=default)
-        entry = ctk.CTkEntry(dialog, textvariable=var, justify=CENTER)
+        entry = QtLineEdit(dialog, textvariable=var, justify=CENTER)
         entry.pack(fill=X, padx=18, pady=6)
         entry.focus_set()
 
@@ -1007,9 +1019,9 @@ def build_sell_ui(parent, username):
                 callback(amount)
                 dialog.destroy()
             except Exception as exc:
-                messagebox.showerror("خطأ", str(exc), parent=dialog)
+                dialogs.showerror("خطأ", str(exc), parent=dialog)
 
-        ctk.CTkButton(dialog, text="تأكيد", command=submit).pack(pady=12)
+        QtButton(dialog, text="تأكيد", command=submit).pack(pady=12)
         entry.bind("<Return>", lambda _event: submit())
 
     def ask_open_shift():
@@ -1018,14 +1030,14 @@ def build_sell_ui(parent, username):
                 shift_id = open_cashier_shift(cashier_id, amount)
                 current_shift["last_id"] = int(shift_id)
                 refresh_shift_ui()
-                messagebox.showinfo(
+                dialogs.showinfo(
                     "الوردية", "بدأت الوردية بنجاح وتم تجهيز مجلد تقاريرها.", parent=top
                 )
             except Exception as exc:
                 # Re-read the DB in case the shift row was committed before a
                 # file-system error happened while preparing its report directory.
                 refresh_shift_ui()
-                messagebox.showerror(
+                dialogs.showerror(
                     "تعذر بدء الوردية", f"{type(exc).__name__}: {exc}", parent=top
                 )
 
@@ -1040,7 +1052,7 @@ def build_sell_ui(parent, username):
         def close_it(amount):
             expected = close_cashier_shift(int(row[0]), amount, cashier_id)
             refresh_shift_ui()
-            messagebox.showinfo(
+            dialogs.showinfo(
                 "إغلاق الوردية",
                 f"تم إغلاق الوردية.\n"
                 f"النقدية المتوقعة: {minor_to_money(expected)}\n"
@@ -1052,7 +1064,7 @@ def build_sell_ui(parent, username):
         amount_dialog("إغلاق الوردية", "أدخل النقدية الفعلية في الدرج", close_it)
 
     def open_return_dialog():
-        dialog = ctk.CTkToplevel(parent)
+        dialog = QtDialog(parent)
         dialog.title("مرتجع بيع")
         dialog.geometry("520x390")
         dialog.transient(top)
@@ -1066,27 +1078,27 @@ def build_sell_ui(parent, username):
             "labels": {},
             "identifier": None,
         }
-        ctk.CTkLabel(
+        QtLabel(
             dialog, text="رقم العملية/الفاتورة (من سجل المبيعات) أو معرف البيع", font=("Arial", 13)
         ).pack(anchor="e", padx=15, pady=(15, 3))
-        ref_entry = ctk.CTkEntry(dialog, textvariable=sale_ref_var)
+        ref_entry = QtLineEdit(dialog, textvariable=sale_ref_var)
         ref_entry.pack(fill=X, padx=15)
-        item_menu = ctk.CTkComboBox(
+        item_menu = QtComboBox(
             dialog, variable=item_var, values=[], state="readonly"
         )
-        ctk.CTkLabel(
+        QtLabel(
             dialog, text="المنتج القابل للإرجاع", font=("Arial", 13)
         ).pack(anchor="e", padx=15, pady=(12, 3))
         item_menu.pack(fill=X, padx=15)
-        ctk.CTkLabel(
+        QtLabel(
             dialog, text="الكمية المراد إرجاعها", font=("Arial", 13)
         ).pack(anchor="e", padx=15, pady=(12, 3))
-        ctk.CTkEntry(dialog, textvariable=return_qty_var).pack(fill=X, padx=15)
+        QtLineEdit(dialog, textvariable=return_qty_var).pack(fill=X, padx=15)
 
         def load_return_items(show_message=True):
             identifier = sale_ref_var.get().strip()
             if not identifier:
-                messagebox.showerror(
+                dialogs.showerror(
                     "تعذر تحميل الفاتورة", "أدخل رقم الفاتورة أو معرفها.", parent=dialog
                 )
                 return False
@@ -1108,7 +1120,7 @@ def build_sell_ui(parent, username):
                 item_menu.configure(values=list(labels))
                 item_var.set(next(iter(labels)))
                 if show_message:
-                    messagebox.showinfo(
+                    dialogs.showinfo(
                         "الفاتورة",
                         f"الفاتورة {sale_number} جاهزة للمرتجع.",
                         parent=dialog,
@@ -1120,7 +1132,7 @@ def build_sell_ui(parent, username):
                 )
                 item_menu.configure(values=[])
                 item_var.set("")
-                messagebox.showerror(
+                dialogs.showerror(
                     "تعذر تحميل الفاتورة", str(exc), parent=dialog
                 )
                 return False
@@ -1153,20 +1165,20 @@ def build_sell_ui(parent, username):
                 )
                 dialog.destroy()
                 build_quick_access()
-                messagebox.showinfo(
+                dialogs.showinfo(
                     "تم المرتجع",
                     f"تم إنشاء المرتجع بنجاح. معرف المرتجع: {return_id}",
                     parent=top,
                 )
             except Exception as exc:
-                messagebox.showerror("تعذر تنفيذ المرتجع", str(exc), parent=dialog)
+                dialogs.showerror("تعذر تنفيذ المرتجع", str(exc), parent=dialog)
 
-        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons = QtFrame(dialog, fg_color="transparent")
         buttons.pack(fill=X, padx=15, pady=18)
-        ctk.CTkButton(
+        QtButton(
             buttons, text="تحميل الفاتورة", command=load_return_items
         ).pack(side=RIGHT, padx=4)
-        ctk.CTkButton(
+        QtButton(
             buttons,
             text="تسجيل المرتجع",
             command=submit_return,
@@ -1178,7 +1190,7 @@ def build_sell_ui(parent, username):
         shift_id = current_shift.get("row")
         shift_id = int(shift_id[0]) if shift_id else current_shift.get("last_id")
         if not shift_id:
-            messagebox.showinfo(
+            dialogs.showinfo(
                 "تقارير الوردية", "ابدأ وردية أولًا لإنشاء مجلد التقارير.", parent=top
             )
             return
@@ -1191,7 +1203,7 @@ def build_sell_ui(parent, username):
             else:
                 subprocess.Popen(["xdg-open", folder])
         except Exception as exc:
-            messagebox.showerror(
+            dialogs.showerror(
                 "تعذر فتح مجلد التقارير",
                 f"تعذر فتح المجلد الخاص بالوردية:\n{type(exc).__name__}: {exc}",
                 parent=top,
@@ -1209,7 +1221,7 @@ def build_sell_ui(parent, username):
             build_quick_access()
             repaint_cart()
         except Exception as exc:
-            messagebox.showerror("خطأ", str(exc), parent=top)
+            dialogs.showerror("خطأ", str(exc), parent=top)
 
 
     debt_window = {"win": None}
@@ -1221,7 +1233,7 @@ def build_sell_ui(parent, username):
             old.focus_force()
             return
  
-        win = ctk.CTkToplevel(parent)
+        win = QtDialog(parent)
         debt_window["win"] = win
         win.title("العملاء المدينون")
         win.geometry("900x590")
@@ -1232,38 +1244,38 @@ def build_sell_ui(parent, username):
         debtors: dict[int, tuple] = {}   # customer_id -> (id, name, debt_minor)
  
         # ---------------- header: action buttons ----------------
-        header = ctk.CTkFrame(win, fg_color=card, corner_radius=12)
+        header = QtFrame(win, fg_color=card, corner_radius=12)
         header.pack(fill=X, padx=12, pady=(12, 6))
-        ctk.CTkLabel(
+        QtLabel(
             header, text="العملاء المدينون", font=("Arial", 20, "bold"), text_color=text
         ).pack(side=RIGHT, padx=14, pady=10)
-        pay_btn = ctk.CTkButton(
+        pay_btn = QtButton(
             header, text="تسديد الدين", width=105,
             fg_color="#1f7a4d", hover_color="#17613d",
         )
         pay_btn.pack(side=LEFT, padx=(10, 3), pady=10)
-        update_btn = ctk.CTkButton(header, text="تعديل الدين", width=105)
+        update_btn = QtButton(header, text="تعديل الدين", width=105)
         update_btn.pack(side=LEFT, padx=3, pady=10)
-        remove_btn = ctk.CTkButton(
+        remove_btn = QtButton(
             header, text="حذف الدين", width=105,
             fg_color="#a93226", hover_color="#922b21",
         )
         remove_btn.pack(side=LEFT, padx=3, pady=10)
-        add_btn = ctk.CTkButton(
+        add_btn = QtButton(
             header, text="إضافة دين", width=105,
             fg_color="#b9770e", hover_color="#9a630b",
         )
         add_btn.pack(side=LEFT, padx=3, pady=10)
  
         # ---------------- search + summary ----------------
-        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar = QtFrame(win, fg_color="transparent")
         bar.pack(fill=X, padx=12, pady=(0, 6))
-        search_entry_debt = ctk.CTkEntry(
+        search_entry_debt = QtLineEdit(
             bar, textvariable=search_debt_var, justify="right", height=36,
             placeholder_text="ابحث باسم العميل أو رقم الهاتف",
         )
         search_entry_debt.pack(side=RIGHT, fill=X, expand=True, padx=(0, 6))
-        ctk.CTkButton(
+        QtButton(
             bar, text="تحديث", width=80, height=36,
             fg_color="#555555", hover_color="#444444",
             command=lambda: refresh(),
@@ -1271,7 +1283,7 @@ def build_sell_ui(parent, username):
  
         # ---------------- table ----------------
         debt_columns = ("id", "name", "phone", "debt")
-        debt_tree = ttk.Treeview(
+        debt_tree = QtTreeWidget(
             win, columns=debt_columns, show="headings", style="Cashier.Treeview",
             selectmode="browse", displaycolumns=debt_columns[::-1],
         )
@@ -1284,7 +1296,7 @@ def build_sell_ui(parent, username):
             debt_tree.heading(col, text=title)
             debt_tree.column(col, width=width, anchor=CENTER, stretch=(col == "name"))
         debt_tree.pack(fill=BOTH, expand=True, padx=12, pady=(0, 6))
-        ctk.CTkLabel(
+        QtLabel(
             win, textvariable=summary_var, text_color=muted, font=("Arial", 13, "bold")
         ).pack(anchor="e", padx=14, pady=(0, 10))
  
@@ -1293,7 +1305,7 @@ def build_sell_ui(parent, username):
             try:
                 rows = get_debt_customers()
             except Exception as exc:
-                messagebox.showerror("خطأ", f"تعذر تحميل العملاء المدينين:\n{exc}", parent=win)
+                dialogs.showerror("خطأ", f"تعذر تحميل العملاء المدينين:\n{exc}", parent=win)
                 return
             needle = search_debt_var.get().strip().casefold()
             debtors.clear()
@@ -1315,7 +1327,7 @@ def build_sell_ui(parent, username):
         def selected_debtor():
             sel = debt_tree.selection()
             if not sel:
-                messagebox.showwarning("اختر عميلًا", "اختر عميلًا من القائمة أولًا.", parent=win)
+                dialogs.showwarning("اختر عميلًا", "اختر عميلًا من القائمة أولًا.", parent=win)
                 return None
             return debtors.get(int(sel[0]))
  
@@ -1326,7 +1338,7 @@ def build_sell_ui(parent, username):
         def form_dialog(title, fields, on_submit, submit_text="تأكيد"):
             """fields: (key, label, 'entry'|'combo', default, values).
             on_submit(values) may return a message to show after success."""
-            dlg = ctk.CTkToplevel(win)
+            dlg = QtDialog(win)
             dlg.title(title)
             dlg.geometry(f"410x{150 + 78 * len(fields)}")
             dlg.resizable(False, False)
@@ -1335,17 +1347,17 @@ def build_sell_ui(parent, username):
             variables = {}
             first_entry = None
             for key, label, kind, default, values in fields:
-                ctk.CTkLabel(
+                QtLabel(
                     dlg, text=label, anchor="e", justify="right",
                     font=("Arial", 12, "bold"), wraplength=370,
                 ).pack(fill=X, padx=16, pady=(12, 2))
                 var = StringVar(value=default)
                 if kind == "combo":
-                    ctk.CTkComboBox(
+                    QtComboBox(
                         dlg, variable=var, values=list(values), state="readonly", height=34
                     ).pack(fill=X, padx=16)
                 else:
-                    entry = ctk.CTkEntry(dlg, textvariable=var, justify="right", height=34)
+                    entry = QtLineEdit(dlg, textvariable=var, justify="right", height=34)
                     entry.pack(fill=X, padx=16)
                     if first_entry is None:
                         first_entry = entry
@@ -1355,18 +1367,18 @@ def build_sell_ui(parent, username):
                 try:
                     message = on_submit({k: v.get() for k, v in variables.items()})
                 except Exception as exc:
-                    messagebox.showerror("تعذر تنفيذ العملية", str(exc), parent=dlg)
+                    dialogs.showerror("تعذر تنفيذ العملية", str(exc), parent=dlg)
                     return
                 dlg.grab_release()
                 dlg.destroy()
                 refresh()
                 if message:
-                    messagebox.showinfo(title, message, parent=win)
+                    dialogs.showinfo(title, message, parent=win)
  
-            row = ctk.CTkFrame(dlg, fg_color="transparent")
+            row = QtFrame(dlg, fg_color="transparent")
             row.pack(fill=X, padx=16, pady=16)
-            ctk.CTkButton(row, text=submit_text, command=submit).pack(side=RIGHT, padx=(4, 0))
-            ctk.CTkButton(
+            QtButton(row, text=submit_text, command=submit).pack(side=RIGHT, padx=(4, 0))
+            QtButton(
                 row, text="إلغاء", fg_color="#555555", hover_color="#444444",
                 command=dlg.destroy,
             ).pack(side=LEFT, padx=(0, 4))
@@ -1382,7 +1394,7 @@ def build_sell_ui(parent, username):
                 return
             cid, name, debt = picked
             if current_shift_id() is None:
-                messagebox.showwarning(
+                dialogs.showwarning(
                     "لا توجد وردية مفتوحة", "ابدأ وردية الكاشير قبل تسديد الدين.", parent=win
                 )
                 return
@@ -1446,7 +1458,7 @@ def build_sell_ui(parent, username):
  
             def submit(v):
                 amount = money_to_minor(v["amount"] or "0")
-                if not messagebox.askyesno(
+                if not dialogs.askyesno(
                     "تأكيد حذف الدين",
                     f"سيتم حذف {minor_to_money(amount)} من دين العميل {name} "
                     "دون استلام أي نقدية، وسيُسجَّل ذلك للمدير.\nهل تريد المتابعة؟",
@@ -1474,7 +1486,7 @@ def build_sell_ui(parent, username):
         def add_debt():
             names = [label for label, cid in customer_labels.items() if cid is not None]
             if not names:
-                messagebox.showwarning(
+                dialogs.showwarning(
                     "لا يوجد عملاء",
                     "الدين يُسجَّل للعملاء المسجلين فقط. أضف العميل أولًا من صفحة البيع.",
                     parent=win,
@@ -1534,7 +1546,7 @@ def build_sell_ui(parent, username):
         command=lambda _value: refresh_customer_mode(reset_payment=True)
     )
 
-    ctk.CTkButton(
+    QtButton(
         controls_body,
         text="تأكيد البيع",
         command=confirm_sale,
@@ -1543,42 +1555,42 @@ def build_sell_ui(parent, username):
         fg_color="#1f7a4d",
         hover_color="#17613d",
     ).pack(fill=X, padx=12, pady=(10, 6))
-    ctk.CTkButton(
+    QtButton(
         controls_body,
-        text=fix("مرتجع بيع"),
+        text="مرتجع بيع",
         command=open_return_dialog,
         height=38,
         fg_color="#a93226",
         hover_color="#922b21",
     ).pack(fill=X, padx=12, pady=5)
-    ctk.CTkButton(
+    QtButton(
         controls_body,
-        text=fix("تحديث الأصناف والعملاء"),
+        text="تحديث الأصناف والعملاء",
         command=lambda: (build_quick_access(), refresh_customers()),
         height=36,
         fg_color="#555555",
         hover_color="#444444",
     ).pack(fill=X, padx=12, pady=5)
-    ctk.CTkButton(
+    QtButton(
         controls_body,
-        text=fix("فتح مجلد تقارير الوردية"),
+        text="فتح مجلد تقارير الوردية",
         command=open_session_reports,
         height=36,
         fg_color="#285c8f",
         hover_color="#1f496f",
     ).pack(fill=X, padx=12, pady=5)
-    ctk.CTkButton(
+    QtButton(
         controls_body,
-        text=fix("اظهار قائمة الديون"),
+        text="اظهار قائمة الديون",
         command=show_debt_customers, #TO-DO
         height=36,
         fg_color="#285c8f",
         hover_color="#1f496f",
 
     ).pack(fill=X, padx=12, pady=5)
-    ctk.CTkLabel(
+    QtLabel(
         controls_body,
-        text=fix("اختصارات: Enter لإضافة البحث، Delete لحذف الصنف، والنقر المزدوج لزيادة الكمية."),
+        text="اختصارات: Enter لإضافة البحث، Delete لحذف الصنف، والنقر المزدوج لزيادة الكمية.",
         text_color=muted,
         font=("Arial", 10),
         wraplength=265,

@@ -32,6 +32,8 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
+from dotenv import dotenv_values
+
 try:
     import keyring
 except ImportError:  # Configuration sources can still be read if keyring is not installed.
@@ -75,6 +77,7 @@ class KeyStore:
         env_file: str | Path | None = None,
         allow_prompt: bool | None = None,
     ) -> None:
+        
         self.service = service
         # Kept for backwards compatibility with older keyring entries where
         # the MySQL username itself was used as the Credential Manager key.
@@ -85,6 +88,34 @@ class KeyStore:
             self.env_file = (self.project_root / self.env_file).resolve()
         self.allow_prompt = self._prompt_setting() if allow_prompt is None else bool(allow_prompt)
         self._credentials_cache: tuple[str, str] | None = None
+
+
+    def delete_credentials(self) -> bool:
+        """Delete the saved MyShop database credentials."""
+
+        if keyring is None:
+            raise KeyStoreError(
+                "The 'keyring' package is not installed."
+            )
+
+        try:
+            keyring.delete_password(
+                self.service,
+                self.CREDENTIAL_ACCOUNT,
+            )
+
+            self._credentials_cache = None
+            return True
+
+        except keyring.errors.PasswordDeleteError:
+            # Credential doesn't exist or cannot be deleted.
+            return False
+
+        except Exception as exc:
+            raise KeyStoreError(
+                "Could not delete MySQL credentials from "
+                "the OS credential store."
+            ) from exc
 
     @staticmethod
     def _application_directory() -> Path:
@@ -102,51 +133,54 @@ class KeyStore:
 
     @staticmethod
     def _first_value(values: Mapping[str, object], names: tuple[str, ...]) -> str | None:
-        for name in names:
+        """ for name in names:
             raw = values.get(name)
             if raw is not None:
                 value = str(raw).strip()
                 if value:
-                    return value
+                    return value """
         return None
 
     @staticmethod
     def _read_dotenv_file(path: Path) -> dict[str, str]:
-        """Read a simple .env file without requiring python-dotenv in the EXE.
+        """Read .env configuration safely."""
 
-        Supports KEY=value, optional ``export ``, comments, and single- or
-        double-quoted values. Values are not interpolated, intentionally.
-        """
-        result: dict[str, str] = {}
         if not path.is_file():
-            return result
-        try:
-            lines = path.read_text(encoding="utf-8-sig").splitlines()
-        except OSError as exc:
-            _LOG.warning("Could not read .env file %s: %s", path, exc)
-            return result
+            return {}
 
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):].lstrip()
-            key, separator, value = line.partition("=")
-            if not separator:
-                continue
-            key = key.strip()
-            value = value.strip()
-            if not key:
-                continue
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-            else:
-                # In unquoted dotenv values, a whitespace-prefixed # begins a comment.
-                comment_index = value.find(" #")
-                if comment_index >= 0:
-                    value = value[:comment_index].rstrip()
-            result[key] = value
+        try:
+            file_values = dotenv_values(path, interpolate=False)
+
+        except (OSError, UnicodeError) as exc:
+            _LOG.warning("Could not read .env file %s: %s", path, exc)
+            return {}
+
+        # Populate missing process environment variables from .env.
+        # Existing process environment variables take precedence.
+        for name, value in file_values.items():
+            if value is not None:
+                os.environ.setdefault(name, value)
+
+        result: dict[str, str] = {}
+
+        # Read the first available username and password aliases.
+        for key, names in (
+            ("username", _USERNAME_KEYS),
+            ("password", _PASSWORD_KEYS),
+            ("port", ("MYSHOP_DB_PORT",)),
+            ("host", ("MYSHOP_DB_HOST",)),
+            ("db_name", ("MYSHOP_DB_NAME", "MYSQL_DATABASE")),
+        ):
+            value = KeyStore._first_value(file_values, names)
+
+            if value is not None:
+                result[key] = value
+
+        # Database connection defaults.
+        result.setdefault("port", "3306")
+        result.setdefault("host", "localhost")
+        result.setdefault("db_name", "myshop")
+
         return result
 
     def _process_credentials(self) -> tuple[str | None, str | None]:
@@ -158,8 +192,8 @@ class KeyStore:
     def _file_credentials(self) -> tuple[str | None, str | None]:
         values = self._read_dotenv_file(self.env_file)
         return (
-            self._first_value(values, _USERNAME_KEYS),
-            self._first_value(values, _PASSWORD_KEYS),
+            values.get("username"),
+            values.get("password"),
         )
 
     def _read_keyring_secret(self, account: str) -> str | None:
@@ -253,37 +287,44 @@ class KeyStore:
         resolved_username = username or process_username or file_username or self.account
         self.set_credentials(resolved_username, password)
 
-    def _prompt_for_credentials(self, username_hint: str | None = None) -> tuple[str, str]:
+    
+    def _prompt_for_credentials(
+        self,
+        username_hint: str | None = None,
+        parent=None,
+    ) -> tuple[str, str]:
+
         if not self.allow_prompt:
             raise KeyStoreError(
-                "No MySQL credentials were found in Windows Credential Manager, "
-                "process environment variables, or .env. Interactive credential "
-                "prompting is disabled. Configure credentials for the process "
-                "or enable MYSHOP_ALLOW_DB_CREDENTIAL_PROMPT=1 in an interactive session."
+                "Interactive credential prompting is disabled."
             )
 
         try:
             import tkinter as tk
-            from tkinter import messagebox
-            from tkinter import ttk
+            from tkinter import messagebox, ttk
         except Exception as exc:
             raise KeyStoreError(
-                "No MySQL credentials were found, and the credential dialog "
-                "could not be loaded in this environment."
+                "Could not load the credential dialog."
             ) from exc
 
-        root = None
+        owned_root = None
+        dialog = None
+        root = parent
+
         try:
-            root = tk.Tk()
-            root.withdraw()
+            if root is None:
+                owned_root = tk.Tk()
+                owned_root.withdraw()
+                root = owned_root
+
             dialog = tk.Toplevel(root)
             dialog.title("MyShop — MySQL Database Credentials")
             dialog.resizable(False, False)
             dialog.transient(root)
-            dialog.grab_set()
 
             outer = ttk.Frame(dialog, padding=16)
             outer.grid(row=0, column=0, sticky="nsew")
+
             ttk.Label(
                 outer,
                 text=(
@@ -293,72 +334,143 @@ class KeyStore:
                 ),
                 wraplength=390,
                 justify="left",
-            ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+            ).grid(
+                row=0, column=0, columnspan=2,
+                sticky="w", pady=(0, 12)
+            )
 
-            username_var = tk.StringVar(value=username_hint or self.account or "")
-            password_var = tk.StringVar()
-            ttk.Label(outer, text="MySQL username:").grid(row=1, column=0, sticky="w", pady=4)
-            username_entry = ttk.Entry(outer, textvariable=username_var, width=38)
-            username_entry.grid(row=1, column=1, sticky="ew", pady=4)
-            ttk.Label(outer, text="MySQL password:").grid(row=2, column=0, sticky="w", pady=4)
-            password_entry = ttk.Entry(outer, textvariable=password_var, width=38, show="•")
-            password_entry.grid(row=2, column=1, sticky="ew", pady=4)
+            username_var = tk.StringVar(
+                master=dialog,
+                value=username_hint or self.account or "",
+            )
+            password_var = tk.StringVar(master=dialog)
+
+            ttk.Label(
+                outer, text="MySQL username:"
+            ).grid(row=1, column=0, sticky="w", pady=4)
+
+            username_entry = ttk.Entry(
+                outer, textvariable=username_var, width=38
+            )
+            username_entry.grid(
+                row=1, column=1, sticky="ew", pady=4
+            )
+
+            ttk.Label(
+                outer, text="MySQL password:"
+            ).grid(row=2, column=0, sticky="w", pady=4)
+
+            password_entry = ttk.Entry(
+                outer, textvariable=password_var,
+                width=38, show="•"
+            )
+            password_entry.grid(
+                row=2, column=1, sticky="ew", pady=4
+            )
 
             result: dict[str, str] = {}
 
-            def submit() -> None:
+            def submit():
                 username = username_var.get().strip()
                 password = password_var.get()
+
                 if not username:
-                    messagebox.showerror("Missing username", "Enter the MySQL username.", parent=dialog)
+                    messagebox.showerror(
+                        "Missing username",
+                        "Enter the MySQL username.",
+                        parent=dialog,
+                    )
                     username_entry.focus_set()
                     return
+
                 if not password:
-                    messagebox.showerror("Missing password", "Enter the MySQL password.", parent=dialog)
+                    messagebox.showerror(
+                        "Missing password",
+                        "Enter the MySQL password.",
+                        parent=dialog,
+                    )
                     password_entry.focus_set()
                     return
+
                 result["username"] = username
                 result["password"] = password
                 dialog.destroy()
 
-            def cancel() -> None:
+            def cancel():
                 dialog.destroy()
 
             buttons = ttk.Frame(outer)
-            buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12, 0))
-            ttk.Button(buttons, text="Cancel", command=cancel).grid(row=0, column=0, padx=(0, 8))
-            ttk.Button(buttons, text="Save credentials", command=submit).grid(row=0, column=1)
+            buttons.grid(
+                row=3, column=0, columnspan=2,
+                sticky="e", pady=(12, 0)
+            )
+
+            ttk.Button(
+                buttons, text="Cancel",
+                command=cancel,
+            ).grid(row=0, column=0, padx=(0, 8))
+
+            ttk.Button(
+                buttons, text="Save credentials",
+                command=submit,
+            ).grid(row=0, column=1)
+
             dialog.protocol("WM_DELETE_WINDOW", cancel)
-            dialog.bind("<Return>", lambda _event: submit())
-            dialog.bind("<Escape>", lambda _event: cancel())
-            username_entry.focus_set()
+            dialog.bind("<Return>", lambda event: submit())
+            dialog.bind("<Escape>", lambda event: cancel())
+
             dialog.update_idletasks()
+
             width = dialog.winfo_reqwidth()
             height = dialog.winfo_reqheight()
+
             x = max(0, (dialog.winfo_screenwidth() - width) // 2)
             y = max(0, (dialog.winfo_screenheight() - height) // 2)
+
             dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+            dialog.deiconify()
+            dialog.lift()
+            dialog.grab_set()
+            username_entry.focus_set()
+
             root.wait_window(dialog)
 
             if not result:
-                raise KeyStoreError("Database credential setup was cancelled.")
+                raise KeyStoreError(
+                    "Database credential setup was cancelled."
+                )
+
             return result["username"], result["password"]
+
         except KeyStoreError:
             raise
+
         except Exception as exc:
+            _LOG.exception("Credential dialog initialization failed")
+
             raise KeyStoreError(
-                "Could not display the MySQL credential dialog. This usually "
-                "happens when the ERP is running in a non-interactive Windows service session."
+                f"Could not display the MySQL credential dialog: {exc}"
             ) from exc
+
         finally:
-            if root is not None:
+            if dialog is not None:
                 try:
-                    root.destroy()
+                    if dialog.winfo_exists():
+                        dialog.destroy()
                 except Exception:
                     pass
 
+            if owned_root is not None:
+                try:
+                    owned_root.destroy()
+                except Exception:
+                    pass
+
+
     def get_credentials(self) -> tuple[str, str]:
         """Return ``(username, password)`` from the best available source."""
+
         if self._credentials_cache:
             return self._credentials_cache
 

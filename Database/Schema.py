@@ -56,22 +56,6 @@ def _dotenv_config() -> dict[str, str]:
         return {}
 
 
-def _config_value(
-    env_values: dict[str, str],
-    names: tuple[str, ...],
-    default: str,
-) -> str:
-    """Process environment takes precedence over the same .env keys."""
-    for name in names:
-        value = os.environ.get(name)
-        if value is not None and value.strip():
-            return value.strip()
-    for name in names:
-        value = env_values.get(name)
-        if value is not None and value.strip():
-            return value.strip()
-    return default
-
 
 # ---------- compatibility layer so the existing services keep working ----------
 # DECIMAL -> float (quantities) or int (money sums), DATE/DATETIME -> str,
@@ -184,7 +168,7 @@ class Database:
         # Keep the .env path consistent with KeyStore's EXE-aware path handling.
         self._key_store = KeyStore()
         dotenv_values = _dotenv_config()
-
+        print(dotenv_values)
         # Accept either the PyMySQL-style 'user' or the clearer 'username'
         # override without accidentally forwarding either as a connection option.
         username_override = overrides.pop("username", None)
@@ -195,22 +179,27 @@ class Database:
 
         try:
             configured_port = int(
-                _config_value(dotenv_values, ("MYSHOP_DB_PORT",), "3306")
+                dotenv_values.get("port") or
+                os.getenv("MYSHOP_DB_PORT") or
+                "3306"
             )
-        except ValueError as exc:
-            raise DatabaseError("MYSHOP_DB_PORT must be an integer.") from exc
+        except (TypeError, ValueError) as exc:
+            raise DatabaseError(
+                "MYSHOP_DB_PORT must be an integer."
+            ) from exc
 
         self.config = {
-            "host": _config_value(
-                dotenv_values,
-                ("MYSHOP_DB_HOST",),
-                "localhost",
+            "host": (
+                os.getenv("MYSHOP_DB_HOST")
+                or dotenv_values.get("host")
+                or "localhost"
             ),
             "port": configured_port,
-            "database": _config_value(
-                dotenv_values,
-                ("MYSHOP_DB_NAME", "MYSQL_DATABASE"),
-                "myshop",
+            "database": (
+                os.getenv("MYSHOP_DB_NAME")
+                or os.getenv("MYSQL_DATABASE")
+                or dotenv_values.get("db_name")
+                or "myshop"
             ),
             **overrides,
         }
