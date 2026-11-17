@@ -1,27 +1,49 @@
-"""Refactored Arabic admin dashboard for the MyShop schema (migrations 1-6).
+"""Native PySide6 Arabic admin dashboard for the MyShop ERP schema.
 
-The dashboard uses the current Database.Schema.db service API and no longer
-imports legacy inventory/customer SQL or image assets.
+This module intentionally has no dependency on UI.qt_compat.  Database and
+business operations remain in Services.admin_service; this file only owns the
+Qt presentation layer.
 """
 from __future__ import annotations
 
-from datetime import date
-from UI.qt_compat import (
-    BOTH, CENTER, END, LEFT, RIGHT, X, Y,
-    StringVar, BooleanVar,
-    QtFrame, QtLabel, QtButton, QtLineEdit, QtComboBox, QtCheckBox,
-    QtScrollableFrame, QtTextEdit, QtDialog, QtTreeWidget, QtScrollBar,
-    QtStyle, TclError, dialogs, colorchooser,
-)
-from UI.common import is_dark
-
-from Services import admin_service as svc
-from UI.router import go_login
 import json
+from datetime import date
+from typing import Any, Callable
+
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSettings, Qt
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QPlainTextEdit,
+    QScrollArea,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from UI.common import is_dark
+from UI.router import go_login
+from Services import admin_service as svc
+
 
 username = ""
-_root = None
-_dashboard_refresh = None
+_root: QWidget | None = None
+_dashboard_refresh: Callable[[], None] | None = None
+_open_windows: list[QDialog] = []
 
 
 def getUsername(username_from_login: str):
@@ -29,7 +51,7 @@ def getUsername(username_from_login: str):
     username = username_from_login or ""
 
 
-def _appearance_colors():
+def _appearance_colors() -> dict[str, str]:
     dark = is_dark()
     return {
         "bg": "#121212" if dark else "#f4f6f8",
@@ -41,26 +63,119 @@ def _appearance_colors():
         "success": "#218c62",
         "danger": "#c0392b",
         "border": "#333943" if dark else "#dce2e8",
+        "input": "#171d26" if dark else "#fbfcfd",
     }
 
 
-def _style_treeview():
+def _button(parent: QWidget, text: str, callback: Callable | None = None,
+            color: str | None = None, hover: str | None = None,
+            height: int = 36, width: int | None = None) -> QPushButton:
     colors = _appearance_colors()
-    style = QtStyle()
-    try:
-        style.theme_use("clam")
-    except TclError:
-        pass
-    style.configure("Admin.Treeview", background=colors["card"], foreground=colors["text"],
-                    fieldbackground=colors["card"], rowheight=29, borderwidth=0,
-                    font=("Segoe UI", 10))
-    style.configure("Admin.Treeview.Heading", background=colors["bg"], foreground=colors["text"],
-                    font=("Segoe UI", 10, "bold"), relief="flat")
-    style.map("Admin.Treeview", background=[("selected", colors["accent"])],
-              foreground=[("selected", "#ffffff")])
+    button = QPushButton(text, parent)
+    button.setCursor(Qt.PointingHandCursor)
+    button.setMinimumHeight(height)
+    if width is not None:
+        button.setFixedWidth(width)
+    bg = color or colors["accent"]
+    over = hover or colors["accent_hover"]
+    button.setStyleSheet(
+        "QPushButton {"
+        f"background: {bg}; color: white; border: 0; border-radius: 7px;"
+        "padding: 6px 12px; font-weight: 600;"
+        "}"
+        f"QPushButton:hover {{ background: {over}; }}"
+        "QPushButton:disabled { background: #858b94; color: #e5e7eb; }"
+    )
+    if callback is not None:
+        button.clicked.connect(callback)
+    return button
 
 
-# Each group exposes actual schema tables/views; transactional records are
+def _label(text: str, parent: QWidget | None = None, *, size: int = 10,
+           bold: bool = False, color: str | None = None,
+           align: Qt.AlignmentFlag = Qt.AlignRight | Qt.AlignVCenter,
+           wrap: bool = False) -> QLabel:
+    colors = _appearance_colors()
+    result = QLabel(text, parent)
+    result.setAlignment(align)
+    result.setWordWrap(wrap)
+    result.setFont(QFont("Segoe UI", size, QFont.Bold if bold else QFont.Normal))
+    result.setStyleSheet(f"color: {color or colors['text']}; background: transparent;")
+    return result
+
+
+def _line_edit(parent: QWidget, value: str = "", placeholder: str = "") -> QLineEdit:
+    colors = _appearance_colors()
+    edit = QLineEdit(parent)
+    edit.setText(value)
+    edit.setPlaceholderText(placeholder)
+    edit.setAlignment(Qt.AlignRight)
+    edit.setMinimumHeight(34)
+    edit.setStyleSheet(
+        f"QLineEdit {{ background: {colors['input']}; color: {colors['text']}; "
+        f"border: 1px solid {colors['border']}; border-radius: 6px; padding: 5px 8px; }}"
+        f"QLineEdit:focus {{ border: 1px solid {colors['accent']}; }}"
+    )
+    return edit
+
+
+def _message(kind: str, title: str, message: str, parent: QWidget | None = None) -> None:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(str(message))
+    box.setIcon({
+        "info": QMessageBox.Information,
+        "warning": QMessageBox.Warning,
+        "error": QMessageBox.Critical,
+    }.get(kind, QMessageBox.Information))
+    box.setLayoutDirection(Qt.RightToLeft)
+    box.exec()
+
+
+def _ask_yes_no(title: str, message: str, parent: QWidget | None = None) -> bool:
+    answer = QMessageBox.question(
+        parent, title, message,
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.No,
+    )
+    return answer == QMessageBox.Yes
+
+
+def _install_page(root: QWidget, page: QWidget) -> None:
+    """Install a page in either a QMainWindow or an ordinary QWidget host."""
+    if isinstance(root, QMainWindow):
+        if hasattr(root, "set_page"):
+            root.set_page(page)
+        else:
+            root.setCentralWidget(page)
+        return
+
+    old_layout = root.layout()
+    if old_layout is None:
+        old_layout = QVBoxLayout(root)
+        old_layout.setContentsMargins(0, 0, 0, 0)
+    else:
+        while old_layout.count():
+            item = old_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+    old_layout.addWidget(page)
+
+
+def _make_scroll_area(parent: QWidget, content: QWidget | None = None) -> tuple[QScrollArea, QWidget, QVBoxLayout]:
+    area = QScrollArea(parent)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.NoFrame)
+    body = content or QWidget()
+    layout = QVBoxLayout(body)
+    layout.setContentsMargins(8, 8, 8, 8)
+    layout.setSpacing(5)
+    area.setWidget(body)
+    return area, body, layout
+
+
+# Each group exposes actual schema tables/views. Transactional records are
 # read-only in the generic browser and changed through explicit workflows.
 ADMIN_GROUPS = [
     ("الملخص", [
@@ -70,7 +185,8 @@ ADMIN_GROUPS = [
     ("المخزون", [
         ("أرصدة المخزون", "stock_levels"), ("الأصناف منخفضة المخزون", "low_stock_products"),
         ("حركة المخزون", "stock_movements"), ("تقييم تقريبي للمخزون", "stock_valuation"),
-        ("المخازن", "warehouses"), ("التحويلات", "stock_transfers"), ("بنود التحويلات", "stock_transfer_items"),("سجل حركة الديون", "debt_log"),
+        ("المخازن", "warehouses"), ("التحويلات", "stock_transfers"),
+        ("بنود التحويلات", "stock_transfer_items"), ("سجل حركة الديون", "debt_log"),
     ]),
     ("المبيعات والمشتريات", [
         ("العملاء والموردون", "partners"), ("أرصدة العملاء", "customer_balances"),
@@ -109,7 +225,7 @@ _ENUM_CHOICES = {
 }
 
 
-def _parse_record_id(resource: str, value):
+def _parse_record_id(resource: str, value: Any):
     if resource in {"settings", "doc_sequences"}:
         return str(value)
     try:
@@ -118,157 +234,188 @@ def _parse_record_id(resource: str, value):
         return value
 
 
-def _field_default(field):
+def _field_default(field: dict):
     default = field.get("default", "")
     return date.today().isoformat() if default == "today" else default
 
 
-class ColorField(QtFrame):
-    """Hex entry + preview swatch + color chooser. Exposes get() like an entry."""
+class ColorField(QWidget):
+    """Hex entry with a preview swatch and QColorDialog picker."""
 
-    def __init__(self, master, initial=""):
-        super().__init__(master, fg_color="transparent")
-        self.grid_columnconfigure(0, weight=1)
-        self._entry = QtLineEdit(self, height=34, placeholder_text="#RRGGBB")
-        self._entry.grid(row=0, column=0, sticky="ew")
-        self._swatch = QtLabel(self, text="", width=34, height=34, corner_radius=6, fg_color="transparent")
-        self._swatch.grid(row=0, column=1, padx=(6, 0))
-        QtButton(self, text="اختيار", width=70, height=34, command=self._pick).grid(row=0, column=2, padx=(6, 0))
-        QtButton(self, text="مسح", width=60, height=34, fg_color="#6b7280", command=self.clear).grid(row=0, column=3, padx=(6, 0))
-        if initial:
-            self._entry.insert(0, str(initial))
-        self._entry.bind("<KeyRelease>", lambda _e: self._update_swatch())
+    def __init__(self, parent: QWidget | None = None, initial: str = ""):
+        super().__init__(parent)
+        self.setLayoutDirection(Qt.LeftToRight)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self._entry = _line_edit(self, str(initial or ""), "#RRGGBB")
+        self._entry.textChanged.connect(self._update_swatch)
+        self._swatch = QLabel(self)
+        self._swatch.setFixedSize(34, 34)
+        self._swatch.setStyleSheet("border: 1px solid #8b929c; border-radius: 5px;")
+        pick = _button(self, "اختيار", self._pick, height=34, width=70)
+        clear = _button(self, "مسح", self.clear, color="#6b7280", hover="#555e6b", height=34, width=60)
+        layout.addWidget(self._entry, 1)
+        layout.addWidget(self._swatch)
+        layout.addWidget(pick)
+        layout.addWidget(clear)
         self._update_swatch()
 
-    def get(self):
-        return self._entry.get()
+    def get(self) -> str:
+        return self._entry.text()
 
-    def clear(self):
-        self._entry.delete(0, "end")
-        self._update_swatch()
+    def clear(self) -> None:
+        self._entry.clear()
 
-    def _valid(self):
-        v = self._entry.get().strip()
-        if v and not v.startswith("#"):
-            v = "#" + v
-        ok = len(v) == 7 and all(ch in "0123456789abcdefABCDEF" for ch in v[1:])
-        return v if ok else None
+    def _valid(self) -> str | None:
+        value = self._entry.text().strip()
+        if value and not value.startswith("#"):
+            value = "#" + value
+        if len(value) == 7 and all(ch in "0123456789abcdefABCDEF" for ch in value[1:]):
+            return value
+        return None
 
-    def _update_swatch(self):
-        self._swatch.configure(fg_color=self._valid() or "transparent")
+    def _update_swatch(self, *_args) -> None:
+        color = self._valid()
+        self._swatch.setStyleSheet(
+            f"background: {color}; border: 1px solid #8b929c; border-radius: 5px;"
+            if color else "background: transparent; border: 1px dashed #8b929c; border-radius: 5px;"
+        )
 
-    def _pick(self):
-        _rgb, hexcode = colorchooser.askcolor(color=self._valid(), parent=self.winfo_toplevel(), title="اختر لون المنتج")
-        if hexcode:
-            self._entry.delete(0, "end")
-            self._entry.insert(0, hexcode.upper())
-            self._update_swatch()
+    def _pick(self) -> None:
+        initial = QColor(self._valid()) if self._valid() else QColor("#ffffff")
+        selected = QColorDialog.getColor(initial, self, "اختر لون المنتج")
+        if selected.isValid():
+            self._entry.setText(selected.name().upper())
 
 
-def _make_choice_widget(parent, field, current):
-    """Returns (widget, display->database value map)."""
+def _make_choice_widget(parent: QWidget, field: dict, current: Any):
+    """Return a native Qt editor and its value mode."""
     name = field["name"]
     if name == "color":
-        return ColorField(parent, current or ""), {}
-    values = []
-    display_to_value = {}
+        return ColorField(parent, current or ""), "color"
+
     supplied_choices = field.get("choice_values")
     if supplied_choices:
-        # A choice may be an enum string or a (database_value, display_label) pair.
-        # Preserve IDs as the submitted value while displaying human-readable labels.
         if all(isinstance(item, (tuple, list)) and len(item) == 2 for item in supplied_choices):
             choices = [(item[0], item[1]) for item in supplied_choices]
         else:
             choices = [(item, item) for item in supplied_choices]
     else:
         choices = svc.get_field_choices(name)
+
     if choices:
-        values.append("")
-        display_to_value[""] = ""
+        combo = QComboBox(parent)
+        combo.setMinimumHeight(34)
+        combo.addItem("", "")
         for value, label in choices:
-            display = f"{value} — {label}"
-            values.append(display)
-            display_to_value[display] = value
-        current_display = ""
+            combo.addItem(f"{value} — {label}", value)
         if current not in (None, ""):
-            for display, raw in display_to_value.items():
-                if str(raw) == str(current):
-                    current_display = display
+            for index in range(combo.count()):
+                if str(combo.itemData(index)) == str(current):
+                    combo.setCurrentIndex(index)
                     break
-        widget = QtComboBox(parent, values=values, height=34, state="readonly")
-        widget.set(current_display)
-        return widget, display_to_value
+        return combo, "combo"
 
     if name in _ENUM_CHOICES:
-        enum_values = _ENUM_CHOICES[name]
-        widget = QtComboBox(parent, values=enum_values, height=34, state="readonly")
-        widget.set(str(current if current not in (None, "") else field.get("default", enum_values[0])))
-        return widget, {v: v for v in enum_values}
+        combo = QComboBox(parent)
+        combo.setMinimumHeight(34)
+        for value in _ENUM_CHOICES[name]:
+            combo.addItem(value, value)
+        target = str(current if current not in (None, "") else field.get("default", _ENUM_CHOICES[name][0]))
+        index = combo.findData(target)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        return combo, "combo"
 
-    widget = QtLineEdit(parent, height=34, justify="right", show="*" if field.get("secret") else "")
+    edit = _line_edit(parent)
     if current not in (None, ""):
-        widget.insert(0, str(current))
+        edit.setText(str(current))
     elif _field_default(field) not in (None, ""):
-        widget.insert(0, str(_field_default(field)))
-    return widget, display_to_value
+        edit.setText(str(_field_default(field)))
+    if field.get("secret"):
+        edit.setEchoMode(QLineEdit.Password)
+    return edit, "line"
 
 
-def _widget_value(widget, display_to_value):
-    value = widget.get().strip()
-    if display_to_value:
-        return display_to_value.get(value, value)
-    return value
+def _widget_value(widget: QWidget, mode: str):
+    if mode == "color":
+        return widget.get()  # type: ignore[attr-defined]
+    if mode == "combo":
+        value = widget.currentData()  # type: ignore[attr-defined]
+        return "" if value is None else value
+    return widget.text().strip()  # type: ignore[attr-defined]
 
 
-def _prompt_form(title: str, fields: list[dict], on_submit, record: dict | None = None,
-                 parent=None, note: str | None = None):
+def _prompt_form(title: str, fields: list[dict], on_submit: Callable[[dict], Any],
+                 record: dict | None = None, parent: QWidget | None = None,
+                 note: str | None = None) -> QDialog:
     parent = parent or _root
     colors = _appearance_colors()
-    win = QtDialog(parent)
-    win.title(title)
-    win.geometry("650x760")
-    win.minsize(520, 420)
-    win.configure(fg_color=colors["bg"])
-    win.transient(parent)
-    win.grab_set()
-
-    QtLabel(win, text=title, font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(padx=18, pady=(16, 8))
+    win = QDialog(parent)
+    win.setWindowTitle(title)
+    win.resize(650, 760)
+    win.setMinimumSize(520, 420)
+    win.setLayoutDirection(Qt.RightToLeft)
+    win.setModal(True)
+    win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
+    root_layout = QVBoxLayout(win)
+    root_layout.setContentsMargins(18, 14, 18, 14)
+    root_layout.setSpacing(8)
+    heading = _label(title, win, size=20, bold=True)
+    root_layout.addWidget(heading)
     if note:
-        QtLabel(win, text=note, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=590, justify="right", anchor="e").pack(fill="x", padx=18, pady=(0, 10))
-    body = QtScrollableFrame(win, fg_color=colors["card"], corner_radius=12)
-    body.pack(fill="both", expand=True, padx=18, pady=8)
-    body.grid_columnconfigure(0, weight=1)
-    body.grid_columnconfigure(1, weight=2)
-    widgets = {}
-    option_maps = {}
-    for row_no, field in enumerate(fields):
-        QtLabel(body, text=field["label"], anchor="e", text_color=colors["text"], font=("Segoe UI", 12)).grid(row=row_no, column=1, sticky="ew", padx=10, pady=7)
+        note_label = _label(note, win, size=10, color=colors["subtext"], wrap=True)
+        root_layout.addWidget(note_label)
+
+    scroll = QScrollArea(win)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    body = QWidget()
+    body.setStyleSheet(f"background: {colors['card']}; border-radius: 9px;")
+    form = QFormLayout(body)
+    form.setContentsMargins(14, 12, 14, 12)
+    form.setHorizontalSpacing(12)
+    form.setVerticalSpacing(9)
+    form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    form.setFormAlignment(Qt.AlignTop)
+
+    widgets: dict[str, QWidget] = {}
+    modes: dict[str, str] = {}
+    for field in fields:
         current = (record or {}).get(field["name"], _field_default(field))
-        widget, display_map = _make_choice_widget(body, field, current)
-        widget.grid(row=row_no, column=0, sticky="ew", padx=10, pady=7)
+        widget, mode = _make_choice_widget(body, field, current)
+        label = _label(field["label"], body, size=10)
+        form.addRow(label, widget)
         widgets[field["name"]] = widget
-        option_maps[field["name"]] = display_map
+        modes[field["name"]] = mode
+    scroll.setWidget(body)
+    root_layout.addWidget(scroll, 1)
 
-    footer = QtFrame(win, fg_color="transparent")
-    footer.pack(fill="x", padx=18, pady=(6, 16))
+    footer = QHBoxLayout()
+    footer.addStretch(1)
 
-    def submit():
-        values = {name: _widget_value(widget, option_maps[name]) for name, widget in widgets.items()}
+    def submit() -> None:
+        values = {name: _widget_value(widget, modes[name]) for name, widget in widgets.items()}
         try:
             result = on_submit(values)
         except Exception as exc:
-            dialogs.showerror("تعذر الحفظ", str(exc), parent=win)
+            _message("error", "تعذر الحفظ", str(exc), win)
             return
         if result is False:
             return
-        win.destroy()
+        win.accept()
 
-    QtButton(footer, text="حفظ", command=submit, fg_color=colors["success"], height=38).pack(side="right", padx=6)
-    QtButton(footer, text="إلغاء", command=win.destroy, fg_color="#6b7280", height=38).pack(side="right", padx=6)
+    save_button = _button(win, "حفظ", submit, color=colors["success"], hover="#176c4b", width=100)
+    cancel_button = _button(win, "إلغاء", win.reject, color="#6b7280", hover="#555e6b", width=100)
+    footer.addWidget(save_button)
+    footer.addWidget(cancel_button)
+    root_layout.addLayout(footer)
+    win.exec()
     return win
 
 
-def _refresh_dashboard():
+def _refresh_dashboard() -> None:
     if _dashboard_refresh:
         try:
             _dashboard_refresh()
@@ -276,26 +423,27 @@ def _refresh_dashboard():
             pass
 
 
-def _notify_action(success_message: str, action, refresh_resource=None, refresh_callback=None):
+def _notify_action(success_message: str, action: Callable[[], Any],
+                   refresh_resource=None, refresh_callback: Callable | None = None) -> bool:
     try:
         action()
     except Exception as exc:
-        dialogs.showerror("خطأ", str(exc), parent=_root)
+        _message("error", "خطأ", str(exc), _root)
         return False
-    dialogs.showinfo("تم", success_message, parent=_root)
+    _message("info", "تم", success_message, _root)
     _refresh_dashboard()
     if refresh_callback:
         refresh_callback()
     return True
 
 
-def _open_entity_editor(resource: str, record_id=None, refresh_callback=None):
+def _open_entity_editor(resource: str, record_id=None, refresh_callback: Callable | None = None):
     fields = svc.FIELD_DEFS[resource]
     record = None
     if record_id is not None:
         record = svc.get_resource_record(resource, record_id)
         if not record:
-            dialogs.showerror("خطأ", "لم يتم العثور على السجل", parent=_root)
+            _message("error", "خطأ", "لم يتم العثور على السجل", _root)
             return
     title = ("إضافة " if record_id is None else "تعديل ") + svc.RESOURCE_CONFIG[resource]["title"]
     note = None
@@ -308,392 +456,574 @@ def _open_entity_editor(resource: str, record_id=None, refresh_callback=None):
     elif resource == "settings":
         note = "تغيير المفاتيح المستخدمة في الحسابات يؤثر على ترحيل القيود. لا تغيّرها إلا إذا كنت تعرف أثرها."
 
-    def save(values):
+    def save(values: dict) -> None:
         svc.save_entity(resource, values, record_id=record_id, user_id=svc.get_username_id(username))
         if refresh_callback:
             refresh_callback()
         _refresh_dashboard()
-        dialogs.showinfo("تم", "تم حفظ البيانات بنجاح", parent=_root)
+        _message("info", "تم", "تم حفظ البيانات بنجاح", _root)
 
-    # For settings, key edits create a new setting because keys are the primary key.
     _prompt_form(title, fields, save, record=record, note=note)
 
 
-def _selected_row(tree):
-    selected = tree.selection()
-    if not selected:
+class ResourceTableModel(QAbstractTableModel):
+    """Read-only model for admin resources.
+
+    Rows retain database column order even when the user visually rearranges
+    columns in QTableView. This keeps action handlers (IDs/status fields) stable.
+    """
+
+    def __init__(self, columns: list[str], parent: QWidget | None = None):
+        super().__init__(parent)
+        self._columns = [str(column) for column in columns]
+        self._rows: list[tuple[Any, ...]] = []
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._columns)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        try:
+            value = self._rows[index.row()][index.column()]
+        except IndexError:
+            return None
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            return "" if value is None else str(value)
+        if role == Qt.ItemDataRole.UserRole:
+            return value
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(Qt.AlignmentFlag.AlignCenter)
         return None
-    item = tree.item(selected[0])
-    vals = item.get("values", [])
-    return vals if vals else None
 
-def _open_audit_log_details(tree, parent, columns):
+    def headerData(
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ):
+        if role == Qt.ItemDataRole.DisplayRole:
+            if orientation == Qt.Orientation.Horizontal and 0 <= section < len(self._columns):
+                return self._columns[section]
+            if orientation == Qt.Orientation.Vertical:
+                return str(section + 1)
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(Qt.AlignmentFlag.AlignCenter)
+        return None
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+    def set_rows(self, rows: list[tuple[Any, ...]]):
+        normalized = []
+        column_count = len(self._columns)
+        for row in rows:
+            values = tuple(row[:column_count])
+            if len(values) < column_count:
+                values += (None,) * (column_count - len(values))
+            normalized.append(values)
+
+        self.beginResetModel()
+        self._rows = normalized
+        self.endResetModel()
+
+    def record_at(self, row: int) -> list[Any] | None:
+        if row < 0 or row >= len(self._rows):
+            return None
+        return list(self._rows[row])
+
+    @staticmethod
+    def _sort_key(value: Any):
+        if value is None:
+            return (3, "")
+        if isinstance(value, bool):
+            return (0, int(value))
+
+        # Numeric database values should sort numerically, not lexicographically.
+        try:
+            from decimal import Decimal, InvalidOperation
+            numeric = Decimal(str(value).replace(",", ""))
+            if numeric.is_finite():
+                return (0, numeric)
+        except (InvalidOperation, ValueError, TypeError):
+            pass
+
+        if isinstance(value, (int, float)):
+            return (0, value)
+        return (1, str(value).casefold())
+
+    def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder):
+        if not 0 <= column < len(self._columns):
+            return
+        reverse = order == Qt.SortOrder.DescendingOrder
+        self.beginResetModel()
+        self._rows.sort(key=lambda row: self._sort_key(row[column]), reverse=reverse)
+        self.endResetModel()
+
+
+def _selected_row(table: QTableView) -> list[Any] | None:
+    """Return selected record values in original database order.
+
+    Header drag-and-drop changes only visual positions, not logical model
+    columns, so business actions continue to read the correct ID/status fields.
+    """
+    index = table.currentIndex()
+    if not index.isValid() and table.selectionModel() is not None:
+        selected_rows = table.selectionModel().selectedRows()
+        if selected_rows:
+            index = selected_rows[0]
+    if not index.isValid():
+        return None
+
+    model = table.model()
+    while hasattr(model, "mapToSource") and hasattr(model, "sourceModel"):
+        index = model.mapToSource(index)
+        model = model.sourceModel()
+
+    if isinstance(model, ResourceTableModel):
+        return model.record_at(index.row())
+
+    # Defensive fallback for any future compatible model.
+    if model is None:
+        return None
+    return [model.index(index.row(), column).data(Qt.ItemDataRole.UserRole)
+            if model.index(index.row(), column).data(Qt.ItemDataRole.UserRole) is not None
+            else model.index(index.row(), column).data(Qt.ItemDataRole.DisplayRole)
+            for column in range(model.columnCount())]
+
+
+def _open_audit_log_details(table: QTableView, parent: QWidget, columns: list[str]):
     """Show all audit fields, including formatted old/new JSON values."""
-    vals = _selected_row(tree)
-
-    if not vals:
-        dialogs.showwarning(
-            "تنبيه",
-            "اختر سجلًا أولًا لعرض تفاصيله.",
-            parent=parent,
-        )
+    values = _selected_row(table)
+    if not values:
+        _message("warning", "تنبيه", "اختر سجلًا أولًا لعرض تفاصيله.", parent)
         return
 
     details = {}
-
     for index, heading in enumerate(columns):
-        value = vals[index] if index < len(vals) else ""
-
-        # The JSON properties occupy columns 7 and 8 in both audit resources.
+        value: Any = values[index] if index < len(values) else ""
         if index in (7, 8) and value:
             try:
                 value = json.loads(value)
             except (TypeError, ValueError):
-                # Preserve the original value if it is not valid JSON.
                 pass
-
         details[str(heading)] = value
 
     colors = _appearance_colors()
+    win = QDialog(parent)
+    win.setWindowTitle("تفاصيل سجل التدقيق")
+    win.resize(950, 700)
+    win.setMinimumSize(650, 450)
+    win.setLayoutDirection(Qt.RightToLeft)
+    win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
+    layout = QVBoxLayout(win)
+    heading = _label("تفاصيل سجل التدقيق", win, size=20, bold=True)
+    layout.addWidget(heading)
+    text_box = QPlainTextEdit(win)
+    text_box.setFont(QFont("Consolas", 11))
+    text_box.setPlainText(json.dumps(details, ensure_ascii=False, indent=2, default=str))
+    text_box.setReadOnly(True)
+    layout.addWidget(text_box, 1)
+    close_button = _button(win, "إغلاق", win.accept, color="#6b7280", hover="#555e6b", width=120)
+    layout.addWidget(close_button, 0, Qt.AlignHCenter)
+    win.exec()
 
-    win = QtDialog(parent)
-    win.title("تفاصيل سجل التدقيق")
-    win.geometry("950x700")
-    win.minsize(650, 450)
-    win.configure(fg_color=colors["bg"])
-    win.transient(parent)
 
-    header = QtFrame(
-        win,
-        fg_color=colors["card"],
-        corner_radius=10,
-    )
-    header.pack(fill="x", padx=14, pady=(14, 8))
-
-    QtLabel(
-        header,
-        text="تفاصيل سجل التدقيق",
-        font=("Segoe UI", 21, "bold"),
-        text_color=colors["text"],
-    ).pack(anchor="e", padx=14, pady=12)
-
-    text_box = QtTextEdit(
-        win,
-        wrap="word",
-        font=("Consolas", 12),
-    )
-    text_box.pack(
-        fill="both",
-        expand=True,
-        padx=14,
-        pady=8,
-    )
-
-    formatted = json.dumps(
-        details,
-        ensure_ascii=False,
-        indent=2,
-        default=str,
-    )
-
-    text_box.insert("1.0", formatted)
-    text_box.configure(state="disabled")
-
-    QtButton(
-        win,
-        text="إغلاق",
-        width=120,
-        height=36,
-        fg_color="#6b7280",
-        command=win.destroy,
-    ).pack(pady=(4, 14))
-
-def _open_stock_adjustment(refresh):
+def _open_stock_adjustment(refresh: Callable[[], None]):
     fields = [
-        {"name":"product_id","label":"المنتج ID","type":"int","required":True},
-        {"name":"warehouse_id","label":"المخزن ID","type":"int","required":True},
-        {"name":"movement_type","label":"نوع الحركة","required":True,"choice_values":_ENUM_CHOICES["movement_type"]},
-        {"name":"quantity_change","label":"تغير الكمية (+ إضافة / - سحب)","type":"float","required":True},
-        {"name":"unit_cost","label":"التكلفة بوحدة العملة الصغرى (اختياري)","type":"int?"},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "product_id", "label": "المنتج ID", "type": "int", "required": True},
+        {"name": "warehouse_id", "label": "المخزن ID", "type": "int", "required": True},
+        {"name": "movement_type", "label": "نوع الحركة", "required": True,
+         "choice_values": _ENUM_CHOICES["movement_type"]},
+        {"name": "quantity_change", "label": "تغير الكمية (+ إضافة / - سحب)", "type": "float", "required": True},
+        {"name": "unit_cost", "label": "التكلفة بوحدة العملة الصغرى (اختياري)", "type": "int?"},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    # Mark choice fields with schema-linked choice sources.
-    fields[0]["choice_values"] = None
-    fields[0]["name"] = "product_id"
-    fields[1]["name"] = "warehouse_id"
-    def submit(v):
-        product_id = int(v["product_id"])
-        warehouse_id = int(v["warehouse_id"])
-        qty = float(v["quantity_change"])
-        unit_cost = int(v["unit_cost"]) if str(v.get("unit_cost", "")).strip() else None
-        movement = str(v["movement_type"])
-        user_id = svc.get_username_id(username)
-        svc.add_stock_adjustment(product_id, warehouse_id, qty, movement, unit_cost, user_id, v.get("note", ""))
+    fields[0]["choice_values"] = svc.get_field_choices("product_id")
+    fields[1]["choice_values"] = svc.get_field_choices("warehouse_id")
+
+    def submit(values):
+        product_id = int(values["product_id"])
+        warehouse_id = int(values["warehouse_id"])
+        qty = float(values["quantity_change"])
+        unit_cost = int(values["unit_cost"]) if str(values.get("unit_cost", "")).strip() else None
+        svc.add_stock_adjustment(product_id, warehouse_id, qty, str(values["movement_type"]),
+                                 unit_cost, svc.get_username_id(username), values.get("note", ""))
         refresh()
         _refresh_dashboard()
-        dialogs.showinfo("تم", "تم تسجيل حركة المخزون بنجاح", parent=_root)
-    _prompt_form("تسوية المخزون", fields, submit, note="لا تغيّر الكمية مباشرة في جدول المنتجات. ستُضاف حركة جديدة إلى دفتر المخزون.")
+        _message("info", "تم", "تم تسجيل حركة المخزون بنجاح", _root)
+
+    _prompt_form("تسوية المخزون", fields, submit,
+                 note="لا تغيّر الكمية مباشرة في جدول المنتجات. ستُضاف حركة جديدة إلى دفتر المخزون.")
 
 
-def _open_transfer(refresh):
+def _open_transfer(refresh: Callable[[], None]):
+    warehouses = [(x[0], x[1]) for x in svc.get_field_choices("warehouse_id")]
+    products = [(x[0], x[1]) for x in svc.get_field_choices("product_id")]
     fields = [
-        {"name":"from_warehouse_id","label":"من المخزن ID","type":"int","required":True,"choices_key":"warehouse_id"},
-        {"name":"to_warehouse_id","label":"إلى المخزن ID","type":"int","required":True,"choices_key":"warehouse_id"},
-        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choices_key":"product_id"},
-        {"name":"quantity","label":"الكمية","type":"float","required":True},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "from_warehouse_id", "label": "من المخزن ID", "type": "int", "required": True, "choice_values": warehouses},
+        {"name": "to_warehouse_id", "label": "إلى المخزن ID", "type": "int", "required": True, "choice_values": warehouses},
+        {"name": "product_id", "label": "المنتج ID", "type": "int", "required": True, "choice_values": products},
+        {"name": "quantity", "label": "الكمية", "type": "float", "required": True},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    # _make_choice_widget looks up choices based on field name; linked keys are aliased here.
-    fields[0]["name"] = "from_warehouse_id"; fields[0]["choice_values"] = [(x[0], x[1]) for x in svc.get_field_choices("warehouse_id")]
-    fields[1]["name"] = "to_warehouse_id"; fields[1]["choice_values"] = [(x[0], x[1]) for x in svc.get_field_choices("warehouse_id")]
-    fields[2]["choice_values"] = [(x[0], x[1]) for x in svc.get_field_choices("product_id")]
-    def submit(v):
-        transfer_id = svc.create_stock_transfer(int(v["from_warehouse_id"]), int(v["to_warehouse_id"]),
-                                                [{"product_id": int(v["product_id"]), "quantity": float(v["quantity"])}],
-                                                svc.get_username_id(username), v.get("note", ""))
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم تسجيل التحويل وإضافة حركتي الصرف والإضافة. رقم السجل: {transfer_id}", parent=_root)
-    _prompt_form("تحويل بين المخازن", fields, submit, note="يتم تسجيل التحويل وحركتي المخزون داخل معاملة واحدة. هذه الشاشة تنفذ تحويلًا لصنف واحد في كل مرة.")
+
+    def submit(values):
+        transfer_id = svc.create_stock_transfer(
+            int(values["from_warehouse_id"]), int(values["to_warehouse_id"]),
+            [{"product_id": int(values["product_id"]), "quantity": float(values["quantity"])}],
+            svc.get_username_id(username), values.get("note", ""),
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم تسجيل التحويل وإضافة حركتي الصرف والإضافة. رقم السجل: {transfer_id}", _root)
+
+    _prompt_form("تحويل بين المخازن", fields, submit,
+                 note="يتم تسجيل التحويل وحركتي المخزون داخل معاملة واحدة. هذه الشاشة تنفذ تحويلًا لصنف واحد في كل مرة.")
 
 
-def _open_sale_form(refresh):
+def _open_sale_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"customer_id","label":"العميل ID (فارغ للبيع النقدي)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("customer_id")]},
-        {"name":"warehouse_id","label":"المخزن ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("warehouse_id")]},
-        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
-        {"name":"quantity","label":"الكمية","type":"float","required":True},
-        {"name":"unit_price","label":"سعر الوحدة بوحدة العملة الصغرى","type":"int","required":True},
-        {"name":"discount","label":"خصم البند بوحدة العملة الصغرى","type":"int","default":"0"},
-        {"name":"tax_rate_bp","label":"نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)","type":"int?"},
-        {"name":"shift_id","label":"الوردية المفتوحة ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("shift_id")]},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "customer_id", "label": "العميل ID (فارغ للبيع النقدي)", "type": "int?", "choice_values": svc.get_field_choices("customer_id")},
+        {"name": "warehouse_id", "label": "المخزن ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("warehouse_id")},
+        {"name": "product_id", "label": "المنتج ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
+        {"name": "quantity", "label": "الكمية", "type": "float", "required": True},
+        {"name": "unit_price", "label": "سعر الوحدة بوحدة العملة الصغرى", "type": "int", "required": True},
+        {"name": "discount", "label": "خصم البند بوحدة العملة الصغرى", "type": "int", "default": "0"},
+        {"name": "tax_rate_bp", "label": "نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)", "type": "int?"},
+        {"name": "shift_id", "label": "الوردية المفتوحة ID (اختياري)", "type": "int?", "choice_values": svc.get_field_choices("shift_id")},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    def submit(v):
+
+    def submit(values):
         current_user_id = svc.get_username_id(username)
         if current_user_id is None:
             raise ValueError("لا يمكن تحديد المستخدم الحالي من اسم الدخول")
-        sale_id = svc.create_sale(int(v["customer_id"]) if v.get("customer_id") else None,
-                                  int(v["warehouse_id"]), int(v["product_id"]), float(v["quantity"]),
-                                  int(v["unit_price"]), int(v.get("discount") or 0), int(v["tax_rate_bp"]) if v.get("tax_rate_bp") else None,
-                                  current_user_id, int(v["shift_id"]) if v.get("shift_id") else None,
-                                  note=v.get("note", ""), post=True)
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم تسجيل البيع وترحيل القيد. معرف البيع: {sale_id}", parent=_root)
+        sale_id = svc.create_sale(
+            int(values["customer_id"]) if values.get("customer_id") else None,
+            int(values["warehouse_id"]), int(values["product_id"]), float(values["quantity"]),
+            int(values["unit_price"]), int(values.get("discount") or 0),
+            int(values["tax_rate_bp"]) if values.get("tax_rate_bp") else None,
+            current_user_id, int(values["shift_id"]) if values.get("shift_id") else None,
+            note=values.get("note", ""), post=True,
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم تسجيل البيع وترحيل القيد. معرف البيع: {sale_id}", _root)
+
     _prompt_form("تسجيل عملية بيع", fields, submit,
                  note="هذه النسخة تسجل بندًا واحدًا. البيع بعميل مسجل يُرحّل إلى حساب العملاء، والبيع النقدي بدون عميل يُرحّل إلى حساب النقدية. المبالغ بوحدة العملة الصغرى.")
 
 
-def _open_purchase_order_form(refresh):
+def _open_purchase_order_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"supplier_id","label":"المورد ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("supplier_id")]},
-        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
-        {"name":"quantity","label":"الكمية","type":"float","required":True},
-        {"name":"unit_cost","label":"تكلفة الوحدة بوحدة العملة الصغرى","type":"int","required":True},
-        {"name":"expected_date","label":"تاريخ التوقع YYYY-MM-DD"},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "supplier_id", "label": "المورد ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("supplier_id")},
+        {"name": "product_id", "label": "المنتج ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
+        {"name": "quantity", "label": "الكمية", "type": "float", "required": True},
+        {"name": "unit_cost", "label": "تكلفة الوحدة بوحدة العملة الصغرى", "type": "int", "required": True},
+        {"name": "expected_date", "label": "تاريخ التوقع YYYY-MM-DD"},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    def submit(v):
-        order_id = svc.create_purchase_order(int(v["supplier_id"]), int(v["product_id"]), float(v["quantity"]), int(v["unit_cost"]), svc.get_username_id(username), v.get("expected_date") or None, v.get("note", ""))
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم إنشاء أمر الشراء كمسودة. المعرف: {order_id}", parent=_root)
-    _prompt_form("إنشاء أمر شراء", fields, submit, note="أمر الشراء لا يزيد المخزون؛ يتم الاستلام عبر فاتورة الشراء المرحلة.")
+
+    def submit(values):
+        order_id = svc.create_purchase_order(
+            int(values["supplier_id"]), int(values["product_id"]), float(values["quantity"]),
+            int(values["unit_cost"]), svc.get_username_id(username),
+            values.get("expected_date") or None, values.get("note", ""),
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم إنشاء أمر الشراء كمسودة. المعرف: {order_id}", _root)
+
+    _prompt_form("إنشاء أمر شراء", fields, submit,
+                 note="أمر الشراء لا يزيد المخزون؛ يتم الاستلام عبر فاتورة الشراء المرحلة.")
 
 
-def _open_sale_return_form(refresh):
+def _open_sale_return_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"original_sale_id","label":"فاتورة البيع الأصلية ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("original_sale_id")]},
-        {"name":"product_id","label":"المنتج ID الموجود بالفاتورة","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
-        {"name":"quantity","label":"كمية المرتجع","type":"float","required":True},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "original_sale_id", "label": "فاتورة البيع الأصلية ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("original_sale_id")},
+        {"name": "product_id", "label": "المنتج ID الموجود بالفاتورة", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
+        {"name": "quantity", "label": "كمية المرتجع", "type": "float", "required": True},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    def submit(v):
+
+    def submit(values):
         current_user_id = svc.get_username_id(username)
         if current_user_id is None:
             raise ValueError("لا يمكن تحديد المستخدم الحالي من اسم الدخول")
-        return_id = svc.create_sale_return(int(v["original_sale_id"]), int(v["product_id"]), float(v["quantity"]), current_user_id, note=v.get("note", ""))
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم ترحيل مرتجع البيع. المعرف: {return_id}", parent=_root)
-    _prompt_form("مرتجع بيع", fields, submit, note="اختر فاتورة بيع مرحلة والمنتج المرتبط بها. يمنع النظام إرجاع كمية تتجاوز الكمية المباعة بعد المرتجعات السابقة.")
+        return_id = svc.create_sale_return(
+            int(values["original_sale_id"]), int(values["product_id"]), float(values["quantity"]),
+            current_user_id, note=values.get("note", ""),
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم ترحيل مرتجع البيع. المعرف: {return_id}", _root)
+
+    _prompt_form("مرتجع بيع", fields, submit,
+                 note="اختر فاتورة بيع مرحلة والمنتج المرتبط بها. يمنع النظام إرجاع كمية تتجاوز الكمية المباعة بعد المرتجعات السابقة.")
 
 
-def _open_purchase_invoice_form(refresh):
+def _open_purchase_invoice_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"supplier_id","label":"المورد ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("supplier_id")]},
-        {"name":"warehouse_id","label":"المخزن ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("warehouse_id")]},
-        {"name":"product_id","label":"المنتج ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
-        {"name":"quantity","label":"الكمية","type":"float","required":True},
-        {"name":"unit_cost","label":"تكلفة الوحدة بوحدة العملة الصغرى","type":"int","required":True},
-        {"name":"tax_rate_bp","label":"نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)","type":"int?"},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "supplier_id", "label": "المورد ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("supplier_id")},
+        {"name": "warehouse_id", "label": "المخزن ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("warehouse_id")},
+        {"name": "product_id", "label": "المنتج ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
+        {"name": "quantity", "label": "الكمية", "type": "float", "required": True},
+        {"name": "unit_cost", "label": "تكلفة الوحدة بوحدة العملة الصغرى", "type": "int", "required": True},
+        {"name": "tax_rate_bp", "label": "نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)", "type": "int?"},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    def submit(v):
-        if int(v.get("tax_rate_bp") or 0) > 0:
-            ok = dialogs.askyesno("تنبيه محاسبي", "دليل الحسابات الحالي لا يحتوي على حساب ضريبة مدخلات قابلة للاسترداد. ستُضاف الضريبة إلى تكلفة المخزون في القيد. هل تريد المتابعة؟", parent=_root)
+
+    def submit(values):
+        if int(values.get("tax_rate_bp") or 0) > 0:
+            ok = _ask_yes_no(
+                "تنبيه محاسبي",
+                "دليل الحسابات الحالي لا يحتوي على حساب ضريبة مدخلات قابلة للاسترداد. ستُضاف الضريبة إلى تكلفة المخزون في القيد. هل تريد المتابعة؟",
+                _root,
+            )
             if not ok:
                 return False
-        invoice_id = svc.create_purchase_invoice(int(v["supplier_id"]), int(v["warehouse_id"]), int(v["product_id"]), float(v["quantity"]), int(v["unit_cost"]), int(v["tax_rate_bp"]) if v.get("tax_rate_bp") else None, svc.get_username_id(username), v.get("note", ""), post=True)
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم ترحيل فاتورة الشراء وزيادة المخزون. المعرف: {invoice_id}", parent=_root)
-    _prompt_form("تسجيل فاتورة شراء", fields, submit, note="النسخة الحالية تدعم بندًا واحدًا فقط لكل عملية. ترحيل الفاتورة يزيد المخزون ويُنشئ قيدًا متوازنًا. إذا كانت ضريبة المدخلات قابلة للاسترداد، أضف حساب ضريبة مدخلات قبل استخدام هذا المسار.")
+        invoice_id = svc.create_purchase_invoice(
+            int(values["supplier_id"]), int(values["warehouse_id"]), int(values["product_id"]),
+            float(values["quantity"]), int(values["unit_cost"]),
+            int(values["tax_rate_bp"]) if values.get("tax_rate_bp") else None,
+            svc.get_username_id(username), values.get("note", ""), post=True,
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم ترحيل فاتورة الشراء وزيادة المخزون. المعرف: {invoice_id}", _root)
+
+    _prompt_form("تسجيل فاتورة شراء", fields, submit,
+                 note="النسخة الحالية تدعم بندًا واحدًا فقط لكل عملية. ترحيل الفاتورة يزيد المخزون ويُنشئ قيدًا متوازنًا. إذا كانت ضريبة المدخلات قابلة للاسترداد، أضف حساب ضريبة مدخلات قبل استخدام هذا المسار.")
 
 
-def _open_purchase_return_form(refresh):
+def _open_purchase_return_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"original_invoice_id","label":"فاتورة الشراء الأصلية ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("original_invoice_id")]},
-        {"name":"product_id","label":"المنتج ID الموجود بالفاتورة","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("product_id")]},
-        {"name":"quantity","label":"كمية المرتجع","type":"float","required":True},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "original_invoice_id", "label": "فاتورة الشراء الأصلية ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("original_invoice_id")},
+        {"name": "product_id", "label": "المنتج ID الموجود بالفاتورة", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
+        {"name": "quantity", "label": "كمية المرتجع", "type": "float", "required": True},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    def submit(v):
-        return_id = svc.create_purchase_return(int(v["original_invoice_id"]), int(v["product_id"]), float(v["quantity"]), svc.get_username_id(username), v.get("note", ""))
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم ترحيل مرتجع الشراء. المعرف: {return_id}", parent=_root)
-    _prompt_form("مرتجع شراء", fields, submit, note="يتحقق النظام من الكمية التي تم شراؤها سابقًا، ويخفض المخزون وينشئ قيدًا متوازنًا. ضريبة الشراء تُعامل ضمن تكلفة المخزون وفق مخطط الحسابات الحالي.")
+
+    def submit(values):
+        return_id = svc.create_purchase_return(
+            int(values["original_invoice_id"]), int(values["product_id"]), float(values["quantity"]),
+            svc.get_username_id(username), values.get("note", ""),
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم ترحيل مرتجع الشراء. المعرف: {return_id}", _root)
+
+    _prompt_form("مرتجع شراء", fields, submit,
+                 note="يتحقق النظام من الكمية التي تم شراؤها سابقًا، ويخفض المخزون وينشئ قيدًا متوازنًا. ضريبة الشراء تُعامل ضمن تكلفة المخزون وفق مخطط الحسابات الحالي.")
 
 
-def _open_payment_form(refresh):
+def _open_payment_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"direction","label":"الاتجاه","required":True,"choice_values":[("IN","تحصيل من عميل"),("OUT","سداد لمورد")]},
-        {"name":"partner_id","label":"الشريك ID","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("partner_id")]},
-        {"name":"method_id","label":"طريقة الدفع ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("method_id")]},
-        {"name":"amount","label":"المبلغ بوحدة العملة الصغرى","type":"int","required":True},
-        {"name":"shift_id","label":"الوردية المفتوحة ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("shift_id")]},
-        {"name":"document_type","label":"نوع المستند المراد التوزيع عليه (اختياري)","choice_values":[("SALE","SALE"),("PURCHASE_INVOICE","PURCHASE_INVOICE")]},
-        {"name":"document_id","label":"معرف المستند (اتركه فارغًا للدفع غير الموزع)","type":"int?"},
-        {"name":"allocated_amount","label":"المبلغ الموزع (اختياري)","type":"int?"},
-        {"name":"reference","label":"مرجع التحويل/الإيصال"},
-        {"name":"note","label":"ملاحظة"},
+        {"name": "direction", "label": "الاتجاه", "required": True,
+         "choice_values": [("IN", "تحصيل من عميل"), ("OUT", "سداد لمورد")]},
+        {"name": "partner_id", "label": "الشريك ID", "type": "int?", "choice_values": svc.get_field_choices("partner_id")},
+        {"name": "method_id", "label": "طريقة الدفع ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("method_id")},
+        {"name": "amount", "label": "المبلغ بوحدة العملة الصغرى", "type": "int", "required": True},
+        {"name": "shift_id", "label": "الوردية المفتوحة ID (اختياري)", "type": "int?", "choice_values": svc.get_field_choices("shift_id")},
+        {"name": "document_type", "label": "نوع المستند المراد التوزيع عليه (اختياري)",
+         "choice_values": [("SALE", "SALE"), ("PURCHASE_INVOICE", "PURCHASE_INVOICE")]},
+        {"name": "document_id", "label": "معرف المستند (اتركه فارغًا للدفع غير الموزع)", "type": "int?"},
+        {"name": "allocated_amount", "label": "المبلغ الموزع (اختياري)", "type": "int?"},
+        {"name": "reference", "label": "مرجع التحويل/الإيصال"},
+        {"name": "note", "label": "ملاحظة"},
     ]
-    def submit(v):
+
+    def submit(values):
         allocations = []
-        if v.get("document_id"):
-            if not v.get("allocated_amount"):
+        if values.get("document_id"):
+            if not values.get("allocated_amount"):
                 raise ValueError("أدخل مبلغ التوزيع عند تحديد مستند")
-            allocations.append({"document_type":v["document_type"], "document_id":int(v["document_id"]), "amount":int(v["allocated_amount"])})
-        elif v.get("allocated_amount"):
+            allocations.append({
+                "document_type": values["document_type"],
+                "document_id": int(values["document_id"]),
+                "amount": int(values["allocated_amount"]),
+            })
+        elif values.get("allocated_amount"):
             raise ValueError("أدخل معرف المستند أو اترك مبلغ التوزيع فارغًا")
-        payment_id = svc.record_payment(v["direction"], int(v["partner_id"]) if v.get("partner_id") else None, int(v["method_id"]), int(v["amount"]), svc.get_username_id(username), allocations, int(v["shift_id"]) if v.get("shift_id") else None, v.get("reference", ""), v.get("note", ""))
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم تسجيل الدفع وإنشاء القيد المحاسبي. المعرف: {payment_id}", parent=_root)
-    _prompt_form("تسجيل دفعة أو تحصيل", fields, submit, note="يمكن توزيع الدفع على مستند واحد في هذه الشاشة. أي مبلغ غير موزع يظل رصيدًا على حساب الشريك وفق منطق أرصدة النظام.")
+        payment_id = svc.record_payment(
+            values["direction"], int(values["partner_id"]) if values.get("partner_id") else None,
+            int(values["method_id"]), int(values["amount"]), svc.get_username_id(username),
+            allocations, int(values["shift_id"]) if values.get("shift_id") else None,
+            values.get("reference", ""), values.get("note", ""),
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم تسجيل الدفع وإنشاء القيد المحاسبي. المعرف: {payment_id}", _root)
+
+    _prompt_form("تسجيل دفعة أو تحصيل", fields, submit,
+                 note="يمكن توزيع الدفع على مستند واحد في هذه الشاشة. أي مبلغ غير موزع يظل رصيدًا على حساب الشريك وفق منطق أرصدة النظام.")
 
 
-def _open_expense_form(refresh):
+def _open_expense_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"expense_date","label":"تاريخ المصروف YYYY-MM-DD","required":True,"default":date.today().isoformat()},
-        {"name":"account_id","label":"حساب المصروف ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("account_id")]},
-        {"name":"method_id","label":"طريقة الدفع ID","type":"int","required":True,"choice_values":[(x[0],x[1]) for x in svc.get_field_choices("method_id")]},
-        {"name":"amount","label":"المبلغ بوحدة العملة الصغرى","type":"int","required":True},
-        {"name":"partner_id","label":"الشريك ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("partner_id")]},
-        {"name":"shift_id","label":"الوردية المفتوحة ID (اختياري)","type":"int?","choice_values":[(x[0],x[1]) for x in svc.get_field_choices("shift_id")]},
-        {"name":"description","label":"الوصف"},
+        {"name": "expense_date", "label": "تاريخ المصروف YYYY-MM-DD", "required": True, "default": date.today().isoformat()},
+        {"name": "account_id", "label": "حساب المصروف ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("account_id")},
+        {"name": "method_id", "label": "طريقة الدفع ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("method_id")},
+        {"name": "amount", "label": "المبلغ بوحدة العملة الصغرى", "type": "int", "required": True},
+        {"name": "partner_id", "label": "الشريك ID (اختياري)", "type": "int?", "choice_values": svc.get_field_choices("partner_id")},
+        {"name": "shift_id", "label": "الوردية المفتوحة ID (اختياري)", "type": "int?", "choice_values": svc.get_field_choices("shift_id")},
+        {"name": "description", "label": "الوصف"},
     ]
-    def submit(v):
-        expense_id = svc.record_expense(v["expense_date"], int(v["account_id"]), int(v["method_id"]), int(v["amount"]), svc.get_username_id(username), v.get("description", ""), int(v["partner_id"]) if v.get("partner_id") else None, int(v["shift_id"]) if v.get("shift_id") else None)
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم تسجيل المصروف وإنشاء القيد. المعرف: {expense_id}", parent=_root)
-    _prompt_form("تسجيل مصروف", fields, submit, note="اختر حسابًا من نوع EXPENSE وطريقة دفع مرتبطة بحساب أستاذ.")
+
+    def submit(values):
+        expense_id = svc.record_expense(
+            values["expense_date"], int(values["account_id"]), int(values["method_id"]),
+            int(values["amount"]), svc.get_username_id(username), values.get("description", ""),
+            int(values["partner_id"]) if values.get("partner_id") else None,
+            int(values["shift_id"]) if values.get("shift_id") else None,
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم تسجيل المصروف وإنشاء القيد. المعرف: {expense_id}", _root)
+
+    _prompt_form("تسجيل مصروف", fields, submit,
+                 note="اختر حسابًا من نوع EXPENSE وطريقة دفع مرتبطة بحساب أستاذ.")
 
 
-def _open_journal_form(refresh):
+def _open_journal_form(refresh: Callable[[], None]):
     accounts = [(x[0], x[1]) for x in svc.get_field_choices("account_id")]
     fields = [
-        {"name":"entry_date","label":"تاريخ القيد YYYY-MM-DD","required":True,"default":date.today().isoformat()},
-        {"name":"description","label":"وصف القيد","required":True},
-        {"name":"debit_account","label":"الحساب المدين ID","type":"int","required":True,"choice_values":accounts},
-        {"name":"credit_account","label":"الحساب الدائن ID","type":"int","required":True,"choice_values":accounts},
-        {"name":"amount","label":"المبلغ بوحدة العملة الصغرى","type":"int","required":True},
+        {"name": "entry_date", "label": "تاريخ القيد YYYY-MM-DD", "required": True, "default": date.today().isoformat()},
+        {"name": "description", "label": "وصف القيد", "required": True},
+        {"name": "debit_account", "label": "الحساب المدين ID", "type": "int", "required": True, "choice_values": accounts},
+        {"name": "credit_account", "label": "الحساب الدائن ID", "type": "int", "required": True, "choice_values": accounts},
+        {"name": "amount", "label": "المبلغ بوحدة العملة الصغرى", "type": "int", "required": True},
     ]
-    def submit(v):
-        if int(v["debit_account"]) == int(v["credit_account"]):
+
+    def submit(values):
+        debit_id = int(values["debit_account"])
+        credit_id = int(values["credit_account"])
+        if debit_id == credit_id:
             raise ValueError("اختر حسابين مختلفين")
-        amount = int(v["amount"])
+        amount = int(values["amount"])
         if amount <= 0:
             raise ValueError("المبلغ يجب أن يكون أكبر من صفر")
-        entry_id = svc.create_manual_journal(v["entry_date"], v["description"], [
-            {"account_id":int(v["debit_account"]),"debit":amount,"credit":0,"description":v["description"]},
-            {"account_id":int(v["credit_account"]),"debit":0,"credit":amount,"description":v["description"]},
-        ], svc.get_username_id(username))
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم إنشاء القيد المتوازن وترحيله. المعرف: {entry_id}", parent=_root)
-    _prompt_form("إنشاء قيد يومية متوازن", fields, submit, note="هذا النموذج ينشئ قيدًا من سطر مدين وسطر دائن بالقيمة نفسها. القيود المرحلة غير قابلة للتعديل أو الحذف.")
+        description = values["description"]
+        entry_id = svc.create_manual_journal(
+            values["entry_date"], description,
+            [
+                {"account_id": debit_id, "debit": amount, "credit": 0, "description": description},
+                {"account_id": credit_id, "debit": 0, "credit": amount, "description": description},
+            ], svc.get_username_id(username),
+        )
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم إنشاء القيد المتوازن وترحيله. المعرف: {entry_id}", _root)
+
+    _prompt_form("إنشاء قيد يومية متوازن", fields, submit,
+                 note="هذا النموذج ينشئ قيدًا من سطر مدين وسطر دائن بالقيمة نفسها. القيود المرحلة غير قابلة للتعديل أو الحذف.")
 
 
-def _open_payroll_form(refresh):
+def _open_payroll_form(refresh: Callable[[], None]):
     fields = [
-        {"name":"period_start","label":"بداية الفترة YYYY-MM-DD","required":True,"default":date.today().replace(day=1).isoformat()},
-        {"name":"period_end","label":"نهاية الفترة YYYY-MM-DD","required":True,"default":date.today().isoformat()},
+        {"name": "period_start", "label": "بداية الفترة YYYY-MM-DD", "required": True, "default": date.today().replace(day=1).isoformat()},
+        {"name": "period_end", "label": "نهاية الفترة YYYY-MM-DD", "required": True, "default": date.today().isoformat()},
     ]
-    def submit(v):
-        run_id = svc.create_payroll_draft(v["period_start"], v["period_end"], svc.get_username_id(username))
-        refresh(); _refresh_dashboard()
-        dialogs.showinfo("تم", f"تم إنشاء مسودة رواتب تشمل الموظفين النشطين. المعرف: {run_id}", parent=_root)
-    _prompt_form("إنشاء مسودة مسير رواتب", fields, submit, note="تنشأ قسائم أولية على أساس الأجر الأساسي فقط. لم يتم تفعيل ترحيل الرواتب أو الدفع آليًا لأن ذلك يتطلب سياسة خصومات/حضور وحسابات مقابلة محددة.")
+
+    def submit(values):
+        run_id = svc.create_payroll_draft(values["period_start"], values["period_end"], svc.get_username_id(username))
+        refresh()
+        _refresh_dashboard()
+        _message("info", "تم", f"تم إنشاء مسودة رواتب تشمل الموظفين النشطين. المعرف: {run_id}", _root)
+
+    _prompt_form("إنشاء مسودة مسير رواتب", fields, submit,
+                 note="تنشأ قسائم أولية على أساس الأجر الأساسي فقط. لم يتم تفعيل ترحيل الرواتب أو الدفع آليًا لأن ذلك يتطلب سياسة خصومات/حضور وحسابات مقابلة محددة.")
 
 
 def _open_role_permissions():
     colors = _appearance_colors()
     roles = svc.get_field_choices("role_id")
     if not roles:
-        dialogs.showerror("خطأ", "لا توجد أدوار", parent=_root); return
-    win = QtDialog(_root)
-    win.title("إدارة صلاحيات الأدوار")
-    win.geometry("600x720")
-    win.transient(_root); win.grab_set(); win.configure(fg_color=colors["bg"])
-    QtLabel(win, text="إدارة صلاحيات الدور", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=12)
-    options = [f"{rid} — {name}" for rid, name in roles]
-    role_combo = QtComboBox(win, values=options, width=450, state="readonly")
-    role_combo.pack(pady=8)
-    check_area = QtScrollableFrame(win, fg_color=colors["card"])
-    check_area.pack(fill="both", expand=True, padx=18, pady=12)
-    state = {"vars": [], "permission_ids": [], "role_id": None}
-    def load_role(_=None):
-        for child in check_area.winfo_children(): child.destroy()
-        state["vars"].clear(); state["permission_ids"].clear()
-        selected = role_combo.get()
-        try: role_id = int(selected.split(" — ",1)[0])
-        except (ValueError, IndexError): return
-        all_permissions, assigned, role = svc.get_role_permissions(role_id)
-        state["role_id"] = role_id
-        for perm_id, code, description in all_permissions:
-            var = BooleanVar(value=perm_id in assigned)
-            box = QtCheckBox(check_area, text=f"{code} — {description}", variable=var)
-            box.pack(fill="x", padx=8, pady=5, anchor="w")
-            state["vars"].append(var); state["permission_ids"].append(perm_id)
-    role_combo.configure(command=load_role)
-    role_combo.set(options[0]); load_role()
+        _message("error", "خطأ", "لا توجد أدوار", _root)
+        return
+
+    win = QDialog(_root)
+    win.setWindowTitle("إدارة صلاحيات الأدوار")
+    win.resize(600, 720)
+    win.setLayoutDirection(Qt.RightToLeft)
+    win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
+    layout = QVBoxLayout(win)
+    layout.addWidget(_label("إدارة صلاحيات الدور", win, size=20, bold=True))
+    role_combo = QComboBox(win)
+    role_combo.setMinimumHeight(36)
+    for role_id, name in roles:
+        role_combo.addItem(f"{role_id} — {name}", role_id)
+    layout.addWidget(role_combo)
+
+    scroll = QScrollArea(win)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    check_body = QWidget()
+    check_body.setStyleSheet(f"background: {colors['card']};")
+    check_layout = QVBoxLayout(check_body)
+    check_layout.setAlignment(Qt.AlignTop)
+    scroll.setWidget(check_body)
+    layout.addWidget(scroll, 1)
+    state: dict[str, Any] = {"checks": [], "permission_ids": [], "role_id": None}
+
+    def load_role(_index: int = 0):
+        while check_layout.count():
+            item = check_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        state["checks"].clear()
+        state["permission_ids"].clear()
+        role_id = role_combo.currentData()
+        if role_id is None:
+            return
+        all_permissions, assigned, _role = svc.get_role_permissions(int(role_id))
+        state["role_id"] = int(role_id)
+        for permission_id, code, description in all_permissions:
+            checkbox = QCheckBox(f"{code} — {description}", check_body)
+            checkbox.setChecked(permission_id in assigned)
+            checkbox.setLayoutDirection(Qt.RightToLeft)
+            check_layout.addWidget(checkbox)
+            state["checks"].append(checkbox)
+            state["permission_ids"].append(permission_id)
+
     def save():
-        if state["role_id"] is None: return
-        selected = [pid for pid, var in zip(state["permission_ids"], state["vars"]) if var.get()]
-        try: svc.set_role_permissions(state["role_id"], selected, svc.get_username_id(username))
+        if state["role_id"] is None:
+            return
+        selected = [pid for pid, checkbox in zip(state["permission_ids"], state["checks"]) if checkbox.isChecked()]
+        try:
+            svc.set_role_permissions(state["role_id"], selected, svc.get_username_id(username))
         except Exception as exc:
-            dialogs.showerror("خطأ", str(exc), parent=win); return
-        dialogs.showinfo("تم", "تم تحديث صلاحيات الدور", parent=win); win.destroy()
-    QtButton(win, text="حفظ الصلاحيات", command=save, fg_color=colors["success"]).pack(pady=(0,16))
+            _message("error", "خطأ", str(exc), win)
+            return
+        _message("info", "تم", "تم تحديث صلاحيات الدور", win)
+        win.accept()
+
+    role_combo.currentIndexChanged.connect(load_role)
+    load_role()
+    layout.addWidget(_button(win, "حفظ الصلاحيات", save, color=colors["success"], hover="#176c4b"))
+    win.exec()
 
 
-def _resource_action_buttons(resource, toolbar, refresh, tree):
+def _resource_action_buttons(resource: str, toolbar: QHBoxLayout,
+                             refresh: Callable[[], None], table: QTableView):
     colors = _appearance_colors()
-    def add_action(label, func):
-        QtButton(toolbar, text=label, command=func, height=34, fg_color=colors["accent"], hover_color=colors["accent_hover"]).pack(side="right", padx=4, pady=4)
+
+    def add_action(label: str, func: Callable):
+        toolbar.addWidget(_button(_root, label, func, color=colors["accent"], hover=colors["accent_hover"], height=34))
+
     if resource in {"debt_log", "audit_log"}:
-        add_action(
-            "عرض تفاصيل السجل",
-            lambda: _open_audit_log_details(
-                tree,
-                tree.winfo_toplevel(),
-                svc.RESOURCE_CONFIG[resource]["columns"],
-            ),
-        )
+        add_action("عرض تفاصيل السجل", lambda: _open_audit_log_details(table, table.window(), svc.RESOURCE_CONFIG[resource]["columns"]))
     elif resource == "stock_levels":
-        add_action(
-            "تسوية مخزون",
-            lambda: _open_stock_adjustment(refresh),
-        )
-        add_action(
-            "تحويل بين المخازن",
-            lambda: _open_transfer(refresh),
-        )
+        add_action("تسوية مخزون", lambda: _open_stock_adjustment(refresh))
+        add_action("تحويل بين المخازن", lambda: _open_transfer(refresh))
     elif resource == "stock_transfers":
         add_action("تحويل جديد", lambda: _open_transfer(refresh))
     elif resource == "sales":
@@ -708,42 +1038,63 @@ def _resource_action_buttons(resource, toolbar, refresh, tree):
         add_action("تسجيل دفعة", lambda: _open_payment_form(refresh))
     elif resource == "cash_shifts":
         def open_shift():
-            fields = [{"name":"opening_cash","label":"رصيد بداية الوردية بوحدة العملة الصغرى","type":"int","default":"0","required":True},{"name":"note","label":"ملاحظة"}]
-            def submit(v):
-                svc.open_cash_shift(svc.get_username_id(username), int(v["opening_cash"]), v.get("note", "")); refresh(); _refresh_dashboard()
-                dialogs.showinfo("تم", "تم فتح الوردية", parent=_root)
+            fields = [
+                {"name": "opening_cash", "label": "رصيد بداية الوردية بوحدة العملة الصغرى", "type": "int", "default": "0", "required": True},
+                {"name": "note", "label": "ملاحظة"},
+            ]
+
+            def submit(values):
+                svc.open_cash_shift(svc.get_username_id(username), int(values["opening_cash"]), values.get("note", ""))
+                refresh()
+                _refresh_dashboard()
+                _message("info", "تم", "تم فتح الوردية", _root)
+
             _prompt_form("فتح وردية خزينة", fields, submit)
+
         def close_shift():
-            vals = _selected_row(tree)
-            if not vals:
-                dialogs.showwarning("تنبيه", "اختر وردية أولًا", parent=_root); return
-            if str(vals[7]) != "OPEN":
-                dialogs.showwarning("تنبيه", "الوردية المحددة ليست مفتوحة", parent=_root); return
-            fields = [{"name":"closing_cash","label":"النقد الفعلي عند الإغلاق بوحدة العملة الصغرى","type":"int","required":True}]
-            def submit(v):
-                expected = svc.close_cash_shift(int(vals[0]), int(v["closing_cash"]), svc.get_username_id(username)); refresh(); _refresh_dashboard()
-                dialogs.showinfo("تم", f"تم إغلاق الوردية. النقد المتوقع من المدفوعات والمصروفات المسجلة: {expected}", parent=_root)
+            values = _selected_row(table)
+            if not values:
+                _message("warning", "تنبيه", "اختر وردية أولًا", _root)
+                return
+            if len(values) <= 7 or str(values[7]) != "OPEN":
+                _message("warning", "تنبيه", "الوردية المحددة ليست مفتوحة", _root)
+                return
+            fields = [{"name": "closing_cash", "label": "النقد الفعلي عند الإغلاق بوحدة العملة الصغرى", "type": "int", "required": True}]
+
+            def submit(form_values):
+                expected = svc.close_cash_shift(int(values[0]), int(form_values["closing_cash"]), svc.get_username_id(username))
+                refresh()
+                _refresh_dashboard()
+                _message("info", "تم", f"تم إغلاق الوردية. النقد المتوقع من المدفوعات والمصروفات المسجلة: {expected}", _root)
+
             _prompt_form("إغلاق الوردية", fields, submit)
-        add_action("فتح وردية", open_shift); add_action("إغلاق الوردية المحددة", close_shift)
+
+        add_action("فتح وردية", open_shift)
+        add_action("إغلاق الوردية المحددة", close_shift)
     elif resource == "expenses":
         add_action("مصروف جديد", lambda: _open_expense_form(refresh))
     elif resource == "journal_entries":
         add_action("قيد يدوي متوازن", lambda: _open_journal_form(refresh))
+
         def reverse_selected_journal():
-            vals = _selected_row(tree)
-            if not vals:
-                dialogs.showwarning("تنبيه", "اختر قيدًا أولًا", parent=_root)
+            values = _selected_row(table)
+            if not values:
+                _message("warning", "تنبيه", "اختر قيدًا أولًا", _root)
                 return
-            if str(vals[6]) != "POSTED":
-                dialogs.showwarning("تنبيه", "اختر قيدًا مرحلًا وغير معكوس", parent=_root)
+            if len(values) <= 6 or str(values[6]) != "POSTED":
+                _message("warning", "تنبيه", "اختر قيدًا مرحلًا وغير معكوس", _root)
                 return
-            reason_win_fields = [{"name":"reason","label":"سبب العكس","required":True}]
-            def submit(v):
-                reversal_id = svc.reverse_manual_journal(int(vals[0]), svc.get_username_id(username), v["reason"])
-                refresh(); _refresh_dashboard()
-                dialogs.showinfo("تم", f"تم إنشاء قيد العكس رقم المعرف {reversal_id}", parent=_root)
-            _prompt_form("عكس قيد يومية يدوي", reason_win_fields, submit,
+            fields = [{"name": "reason", "label": "سبب العكس", "required": True}]
+
+            def submit(form_values):
+                reversal_id = svc.reverse_manual_journal(int(values[0]), svc.get_username_id(username), form_values["reason"])
+                refresh()
+                _refresh_dashboard()
+                _message("info", "تم", f"تم إنشاء قيد العكس رقم المعرف {reversal_id}", _root)
+
+            _prompt_form("عكس قيد يومية يدوي", fields, submit,
                          note="يُنشأ قيد جديد بعكس المدين والدائن. لا يتم حذف أو تعديل بنود القيد الأصلي، ولا يمكن عكس القيود التشغيلية من هذه الشاشة.")
+
         add_action("عكس قيد يدوي", reverse_selected_journal)
     elif resource == "payroll_runs":
         add_action("مسودة رواتب", lambda: _open_payroll_form(refresh))
@@ -754,108 +1105,171 @@ def _resource_action_buttons(resource, toolbar, refresh, tree):
 def open_resource_window(resource: str):
     cfg = svc.RESOURCE_CONFIG.get(resource)
     if not cfg:
-        dialogs.showerror("خطأ", "هذه الشاشة غير مسجلة", parent=_root); return
+        _message("error", "خطأ", "هذه الشاشة غير مسجلة", _root)
+        return
+
     colors = _appearance_colors()
-    win = QtDialog(_root)
-    win.title(cfg["title"])
-    win.geometry("1250x720")
-    win.minsize(850, 520)
-    win.configure(fg_color=colors["bg"])
-    win.transient(_root)
-    _style_treeview()
+    win = QDialog(_root)
+    win.setWindowTitle(cfg["title"])
+    win.resize(1250, 720)
+    win.setMinimumSize(850, 520)
+    win.setLayoutDirection(Qt.RightToLeft)
+    win.setAttribute(Qt.WA_DeleteOnClose, True)
+    win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
+    _open_windows.append(win)
+    win.destroyed.connect(lambda *_: _open_windows.remove(win) if win in _open_windows else None)
 
-    header = QtFrame(win, fg_color=colors["card"], corner_radius=12)
-    header.pack(fill="x", padx=16, pady=(16, 8))
-    QtLabel(header, text=cfg["title"], font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(side="right", padx=14, pady=10)
+    root_layout = QVBoxLayout(win)
+    header = QFrame(win)
+    header.setStyleSheet(f"background: {colors['card']}; border-radius: 10px;")
+    header_layout = QHBoxLayout(header)
+    header_layout.addWidget(_label(cfg["title"], header, size=20, bold=True))
+    root_layout.addWidget(header)
 
-    toolbar = QtFrame(win, fg_color="transparent")
-    toolbar.pack(fill="x", padx=16, pady=4)
-    search_var = StringVar()
-    search_entry = QtLineEdit(toolbar, textvariable=search_var, placeholder_text="بحث...", width=280, height=34, justify="right")
-    search_entry.pack(side="right", padx=4)
+    toolbar_widget = QWidget(win)
+    toolbar = QHBoxLayout(toolbar_widget)
+    toolbar.setContentsMargins(0, 4, 0, 4)
+    search_entry = _line_edit(toolbar_widget, placeholder="بحث...")
+    search_entry.setFixedWidth(280)
+    toolbar.addWidget(search_entry)
+    count_label = _label("", toolbar_widget, color=colors["subtext"])
+    toolbar.addWidget(count_label)
+    toolbar.addWidget(_button(toolbar_widget, "تحديث", height=34, width=80))
+    refresh_button = toolbar.itemAt(toolbar.count() - 1).widget()
+    root_layout.addWidget(toolbar_widget)
 
-    table_frame = QtFrame(win, fg_color=colors["card"], corner_radius=10)
-    table_frame.pack(fill="both", expand=True, padx=16, pady=(4, 16))
-    tree_holder = QtFrame(table_frame, bd=0, highlightthickness=0, bg=colors["card"])
-    tree_holder.pack(fill="both", expand=True, padx=8, pady=8)
-    columns = [f"c{i}" for i in range(len(cfg["columns"]))]
-    # RTL: display columns in reverse order (first column, usually ID, on the right).
-    # Item values keep their original order, so vals[0] is still the record ID.
-    tree = QtTreeWidget(tree_holder, columns=columns, displaycolumns=columns[::-1],
-                        show="headings", style="Admin.Treeview")
-    vscroll = QtScrollBar(tree_holder, orient="vertical", command=tree.yview)
-    hscroll = QtScrollBar(tree_holder, orient="horizontal", command=tree.xview)
-    tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-    vscroll.grid(row=0, column=0, sticky="ns")
-    tree.grid(row=0, column=1, sticky="nsew")
-    hscroll.grid(row=1, column=1, sticky="ew")
-    tree_holder.rowconfigure(0, weight=1); tree_holder.columnconfigure(1, weight=1)
-    for idx, heading in enumerate(cfg["columns"]):
-        tree.heading(columns[idx], text=heading)
-        tree.column(columns[idx], width=min(240, max(90, len(str(heading)) * 11)), anchor="center", stretch=True)
+    table_model = ResourceTableModel(cfg["columns"], win)
+    table = QTableView(win)
+    table.setModel(table_model)
+    table.setLayoutDirection(Qt.RightToLeft)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setAlternatingRowColors(True)
+    table.setWordWrap(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
+    table.setShowGrid(True)
+    table.verticalHeader().setVisible(False)
+    table.verticalHeader().setDefaultSectionSize(30)
+    header_view = table.horizontalHeader()
+    header_view.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    header_view.setSectionsMovable(True)
+    header_view.setSectionsClickable(True)
+    header_view.setHighlightSections(False)
+    header_view.setStretchLastSection(False)
+    header_view.setMinimumSectionSize(65)
+    header_view.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+    # Sorting is activated by an explicit header click so the service's
+    # default ordering (for example newest sales first) is preserved initially.
+    table.setSortingEnabled(False)
+    header_view.setSortIndicatorShown(True)
+    table.setStyleSheet(
+        f"QTableView {{ background: {colors['card']}; color: {colors['text']}; "
+        f"alternate-background-color: {colors['bg']}; gridline-color: {colors['border']}; "
+        f"border: 0; selection-background-color: {colors['accent']}; selection-color: white; }}"
+        f"QHeaderView::section {{ background: {colors['bg']}; color: {colors['text']}; "
+        "padding: 7px; border: 0; font-weight: 600; }}"
+        f"QTableCornerButton::section {{ background: {colors['bg']}; border: 0; }}"
+    )
+    for index, heading in enumerate(cfg["columns"]):
+        table.setColumnWidth(index, min(260, max(90, len(str(heading)) * 11)))
+    root_layout.addWidget(table, 1)
+
+    # Keep each resource's column order and widths between application runs.
+    header_settings = QSettings("MyShop", "MyShopERP")
+    header_state_key = f"admin/resource_tables/{resource}/header_state"
+    saved_header_state = header_settings.value(header_state_key)
+    if saved_header_state is not None:
+        header_view.restoreState(saved_header_state)
+
+    def save_header_state(*_args):
+        header_settings.setValue(header_state_key, header_view.saveState())
+
+    header_view.sectionMoved.connect(save_header_state)
+    header_view.sectionResized.connect(save_header_state)
+
+    sort_state: dict[str, Any] = {"column": None, "order": Qt.SortOrder.AscendingOrder}
+
+    def sort_from_header(logical_index: int):
+        if sort_state["column"] == logical_index:
+            sort_state["order"] = (
+                Qt.SortOrder.DescendingOrder
+                if sort_state["order"] == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            sort_state["column"] = logical_index
+            sort_state["order"] = Qt.SortOrder.AscendingOrder
+
+        header_view.setSortIndicator(logical_index, sort_state["order"])
+        table_model.sort(logical_index, sort_state["order"])
+
+    header_view.sectionClicked.connect(sort_from_header)
 
     def refresh():
         try:
-            rows = svc.list_resource(resource, search_var.get())
+            rows = svc.list_resource(resource, search_entry.text())
         except Exception as exc:
-            dialogs.showerror("خطأ في قراءة البيانات", str(exc), parent=win)
+            _message("error", "خطأ في قراءة البيانات", str(exc), win)
             return
-        tree.delete(*tree.get_children())
-        for row in rows:
-            tree.insert("", "end", values=["" if v is None else v for v in row])
-        count_label.configure(text=f"عدد السجلات: {len(rows)}")
+        table_model.set_rows(rows)
+        if sort_state["column"] is not None:
+            table_model.sort(int(sort_state["column"]), sort_state["order"])
+        count_label.setText(f"عدد السجلات: {len(rows)}")
 
-    count_label = QtLabel(toolbar, text="", text_color=colors["subtext"])
-    count_label.pack(side="left", padx=8)
-    QtButton(toolbar, text="تحديث", width=80, command=refresh, height=34).pack(side="left", padx=3)
-    search_entry.bind("<Return>", lambda _e: refresh())
+    refresh_button.clicked.connect(refresh)
+    search_entry.returnPressed.connect(refresh)
 
     if cfg.get("editable"):
-        QtButton(toolbar, text="إضافة", width=90, height=34, fg_color=colors["success"],
-                      command=lambda: _open_entity_editor(resource, refresh_callback=refresh)).pack(side="left", padx=3)
+        add_button = _button(toolbar_widget, "إضافة", color=colors["success"], hover="#176c4b", width=90, height=34)
+        toolbar.addWidget(add_button)
+        add_button.clicked.connect(lambda: _open_entity_editor(resource, refresh_callback=refresh))
+
         def edit_selected():
-            vals = _selected_row(tree)
-            if not vals:
-                dialogs.showwarning("تنبيه", "اختر سجلًا للتعديل", parent=win); return
-            _open_entity_editor(resource, _parse_record_id(resource, vals[0]), refresh_callback=refresh)
-        QtButton(toolbar, text="تعديل", width=90, height=34, command=edit_selected).pack(side="left", padx=3)
+            values = _selected_row(table)
+            if not values:
+                _message("warning", "تنبيه", "اختر سجلًا للتعديل", win)
+                return
+            _open_entity_editor(resource, _parse_record_id(resource, values[0]), refresh_callback=refresh)
+
+        edit_button = _button(toolbar_widget, "تعديل", width=90, height=34)
+        toolbar.addWidget(edit_button)
+        edit_button.clicked.connect(edit_selected)
+
         if resource not in {"settings", "doc_sequences", "product_barcodes", "roles"}:
             def deactivate_selected():
-                vals = _selected_row(tree)
-                if not vals:
-                    dialogs.showwarning("تنبيه", "اختر سجلًا أولًا", parent=win); return
-                record_id = _parse_record_id(resource, vals[0])
-                if not dialogs.askyesno("تأكيد", "هل تريد تعطيل هذا السجل؟ لن يتم حذفه من قاعدة البيانات.", parent=win): return
+                values = _selected_row(table)
+                if not values:
+                    _message("warning", "تنبيه", "اختر سجلًا أولًا", win)
+                    return
+                record_id = _parse_record_id(resource, values[0])
+                if not _ask_yes_no("تأكيد", "هل تريد تعطيل هذا السجل؟ لن يتم حذفه من قاعدة البيانات.", win):
+                    return
                 try:
-                    svc.deactivate_entity(resource, int(record_id), user_id=svc.get_username_id(username)); refresh(); _refresh_dashboard()
+                    svc.deactivate_entity(resource, int(record_id), user_id=svc.get_username_id(username))
+                    refresh()
+                    _refresh_dashboard()
                 except Exception as exc:
-                    dialogs.showerror("تعذر التعطيل", str(exc), parent=win)
-            QtButton(toolbar, text="تعطيل", width=90, height=34, fg_color=colors["danger"], command=deactivate_selected).pack(side="left", padx=3)
+                    _message("error", "تعذر التعطيل", str(exc), win)
 
-    _resource_action_buttons(resource, toolbar, refresh, tree)
-    def handle_tree_double_click(_event=None):
+            deactivate_button = _button(toolbar_widget, "تعطيل", color=colors["danger"], hover="#a93226", width=90, height=34)
+            toolbar.addWidget(deactivate_button)
+            deactivate_button.clicked.connect(deactivate_selected)
+
+    _resource_action_buttons(resource, toolbar, refresh, table)
+
+    def handle_double_click(_index: QModelIndex):
         if resource in {"debt_log", "audit_log"}:
-            _open_audit_log_details(
-                tree,
-                win,
-                cfg["columns"],
-            )
+            _open_audit_log_details(table, win, cfg["columns"])
             return
-
         if cfg.get("editable"):
-            vals = _selected_row(tree)
-            if vals:
-                _open_entity_editor(
-                    resource,
-                    _parse_record_id(resource, vals[0]),
-                    refresh,
-                )
+            values = _selected_row(table)
+            if values:
+                _open_entity_editor(resource, _parse_record_id(resource, values[0]), refresh_callback=refresh)
 
-
-    tree.bind("<Double-1>", handle_tree_double_click)
+    table.doubleClicked.connect(handle_double_click)
     refresh()
-    # RTL: start scrolled to the right edge so the first (rightmost) columns are visible.
-    win.after(100, lambda: tree.xview_moveto(1.0))
+    win.show()
     return win
 
 
@@ -887,20 +1301,28 @@ def open_debt_log_page():
     """Open the full debt activity window for the admin."""
     return open_resource_window("debt_log")
 
+
 def open_statistics_page():
     colors = _appearance_colors()
-    win = QtDialog(_root)
-    win.title("التقارير والتدقيق")
-    win.geometry("520x560")
-    win.configure(fg_color=colors["bg"])
-    win.transient(_root); win.grab_set()
-    QtLabel(win, text="التقارير والتدقيق", font=("Segoe UI", 22, "bold"), text_color=colors["text"]).pack(pady=18)
-    for label, resource in [("الأصناف منخفضة المخزون", "low_stock_products"), ("تقييم تقريبي للمخزون", "stock_valuation"),
-                            ("أرصدة العملاء", "customer_balances"), ("أرصدة الموردين", "supplier_balances"),
-                            ("القيود غير المتوازنة", "unbalanced_entries"), ("سجل التدقيق", "audit_log")]:
-        QtButton(win, text=label, height=42, command=lambda r=resource: open_resource_window(r),
-                      fg_color=colors["accent"]).pack(fill="x", padx=36, pady=5)
-    QtButton(win, text="إغلاق", command=win.destroy, fg_color="#6b7280").pack(pady=18)
+    win = QDialog(_root)
+    win.setWindowTitle("التقارير والتدقيق")
+    win.resize(520, 560)
+    win.setLayoutDirection(Qt.RightToLeft)
+    win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
+    layout = QVBoxLayout(win)
+    layout.addWidget(_label("التقارير والتدقيق", win, size=20, bold=True))
+    reports = [
+        ("الأصناف منخفضة المخزون", "low_stock_products"),
+        ("تقييم تقريبي للمخزون", "stock_valuation"),
+        ("أرصدة العملاء", "customer_balances"),
+        ("أرصدة الموردين", "supplier_balances"),
+        ("القيود غير المتوازنة", "unbalanced_entries"),
+        ("سجل التدقيق", "audit_log"),
+    ]
+    for label, resource in reports:
+        layout.addWidget(_button(win, label, lambda _checked=False, r=resource: open_resource_window(r), height=42))
+    layout.addWidget(_button(win, "إغلاق", win.accept, color="#6b7280", hover="#555e6b"))
+    win.exec()
 
 
 def open_sells_admin():
@@ -911,76 +1333,119 @@ def open_users_controll():
     return open_resource_window("users")
 
 
-def open_admin(root):
-    """Build the dashboard in the supplied PySide6 BaseWindow/QMainWindow."""
+def open_admin(root: QWidget):
+    """Build and mount the native PySide6 admin dashboard."""
     global _root, _dashboard_refresh
     _root = root
     colors = _appearance_colors()
 
-    # A QMainWindow must receive its page through setCentralWidget/set_page.
-    # For an ordinary QWidget host, the page is installed with a Qt layout.
-    from PySide6.QtWidgets import QMainWindow
-    if isinstance(root, QMainWindow):
-        shell = QtFrame(None, fg_color=colors["bg"], corner_radius=0)
-        if hasattr(root, "set_page"):
-            root.set_page(shell)
-        else:
-            root.setCentralWidget(shell)
-    else:
-        for widget in root.winfo_children():
-            widget.destroy()
-        shell = QtFrame(root, fg_color=colors["bg"], corner_radius=0)
-        shell.pack(fill="both", expand=True)
+    shell = QWidget()
+    shell.setLayoutDirection(Qt.RightToLeft)
+    shell.setStyleSheet(f"background: {colors['bg']}; color: {colors['text']};")
+    shell_layout = QVBoxLayout(shell)
+    shell_layout.setContentsMargins(0, 0, 0, 0)
+    shell_layout.setSpacing(0)
+    _install_page(root, shell)
 
-    header = QtFrame(shell, fg_color=colors["accent"], corner_radius=0, height=76)
-    header.pack(fill="x")
-    header.pack_propagate(False)
-    QtLabel(header, text="لوحة تحكم MyShop ERP", font=("Segoe UI", 26, "bold"), text_color="#ffffff").pack(side="right", padx=24, pady=18)
-    QtLabel(header, text=f"المستخدم: {username or 'غير معروف'}", font=("Segoe UI", 14), text_color="#ffffff").pack(side="left", padx=24)
+    header = QFrame(shell)
+    header.setFixedHeight(76)
+    header.setStyleSheet(f"background: {colors['accent']};")
+    header_layout = QHBoxLayout(header)
+    header_layout.setContentsMargins(24, 8, 24, 8)
+    header_layout.addWidget(_label("لوحة تحكم MyShop ERP", header, size=23, bold=True, color="#ffffff"))
+    header_layout.addStretch(1)
+    header_layout.addWidget(_label(f"المستخدم: {username or 'غير معروف'}", header, size=12, color="#ffffff"))
+    shell_layout.addWidget(header)
 
-    body = QtFrame(shell, fg_color="transparent")
-    body.pack(fill="both", expand=True, padx=18, pady=16)
-    nav = QtScrollableFrame(body, width=300, fg_color=colors["card"], corner_radius=12)
-    nav.pack(side="right", fill="y", padx=(12, 0))
-    content = QtScrollableFrame(body, fg_color="transparent", corner_radius=12)
-    content.pack(side="left", fill="both", expand=True)
+    body = QWidget(shell)
+    body_layout = QHBoxLayout(body)
+    body_layout.setContentsMargins(18, 16, 18, 16)
+    body_layout.setSpacing(12)
+    shell_layout.addWidget(body, 1)
 
-    QtLabel(nav, text="الوحدات", font=("Segoe UI", 20, "bold"), text_color=colors["text"]).pack(fill="x", padx=12, pady=(12, 6))
+    nav_area = QScrollArea(body)
+    nav_area.setWidgetResizable(True)
+    nav_area.setFixedWidth(300)
+    nav_area.setFrameShape(QFrame.NoFrame)
+    nav_widget = QWidget()
+    nav_widget.setStyleSheet(f"background: {colors['card']}; border-radius: 10px;")
+    nav_layout = QVBoxLayout(nav_widget)
+    nav_layout.setContentsMargins(12, 12, 12, 12)
+    nav_layout.setAlignment(Qt.AlignTop)
+    nav_layout.addWidget(_label("الوحدات", nav_widget, size=18, bold=True))
     for group, resources in ADMIN_GROUPS:
-        QtLabel(nav, text=group, font=("Segoe UI", 13, "bold"), text_color=colors["subtext"], anchor="e").pack(fill="x", padx=12, pady=(12, 4))
+        nav_layout.addWidget(_label(group, nav_widget, size=11, bold=True, color=colors["subtext"]))
         for label, resource in resources:
-            QtButton(nav, text=label, anchor="e", height=34, fg_color="transparent", text_color=colors["text"],
-                          hover_color=colors["border"], command=lambda r=resource: open_resource_window(r)).pack(fill="x", padx=8, pady=2)
+            button = QPushButton(label, nav_widget)
+            button.setMinimumHeight(33)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setLayoutDirection(Qt.RightToLeft)
+            button.setStyleSheet(
+                f"QPushButton {{ text-align: right; color: {colors['text']}; background: transparent; border: 0; padding: 5px 8px; }}"
+                f"QPushButton:hover {{ background: {colors['border']}; border-radius: 5px; }}"
+            )
+            button.clicked.connect(lambda _checked=False, r=resource: open_resource_window(r))
+            nav_layout.addWidget(button)
+    nav_layout.addStretch(1)
+    nav_area.setWidget(nav_widget)
+    body_layout.addWidget(nav_area)
 
-    QtLabel(content, text="نظرة عامة", font=("Segoe UI", 25, "bold"), text_color=colors["text"]).pack(anchor="e", padx=6, pady=(2, 10))
-    QtLabel(content, text="اختر وحدة من القائمة للوصول إلى جداول النظام وإجراءاته. القيود والمخزون المرحل لا يُعدلان من جداول العرض مباشرة.",
-                  font=("Segoe UI", 13), text_color=colors["subtext"], wraplength=900, justify="right").pack(anchor="e", fill="x", padx=6, pady=(0, 14))
+    content_area = QScrollArea(body)
+    content_area.setWidgetResizable(True)
+    content_area.setFrameShape(QFrame.NoFrame)
+    content = QWidget()
+    content.setStyleSheet("background: transparent;")
+    content_layout = QVBoxLayout(content)
+    content_layout.setContentsMargins(6, 2, 6, 8)
+    content_layout.setSpacing(10)
+    content_layout.addWidget(_label("نظرة عامة", content, size=23, bold=True))
+    content_layout.addWidget(_label(
+        "اختر وحدة من القائمة للوصول إلى جداول النظام وإجراءاته. القيود والمخزون المرحل لا يُعدلان من جداول العرض مباشرة.",
+        content, size=10, color=colors["subtext"], wrap=True,
+    ))
 
-    cards_frame = QtFrame(content, fg_color="transparent")
-    cards_frame.pack(fill="x", expand=False)
-    for col in range(3): cards_frame.grid_columnconfigure(col, weight=1)
+    cards_frame = QWidget(content)
+    cards_grid = QGridLayout(cards_frame)
+    cards_grid.setContentsMargins(0, 0, 0, 0)
+    cards_grid.setHorizontalSpacing(10)
+    cards_grid.setVerticalSpacing(10)
     stats_config = [
-        ("products", "المنتجات النشطة", "products"), ("stock_units", "إجمالي وحدات المخزون", "stock_levels"),
-        ("low_stock", "أصناف منخفضة المخزون", "low_stock_products"), ("customers", "العملاء", "partners"),
-        ("suppliers", "الموردون", "partners"), ("sales_today", "مبيعات اليوم (وحدة صغرى)", "sales"),
-        ("receivables", "صافي أرصدة العملاء", "customer_balances"), ("payables", "صافي أرصدة الموردين", "supplier_balances"),
-        ("employees", "الموظفون النشطون", "employees"), ("unbalanced", "قيود تحتاج مراجعة", "unbalanced_entries"),
+        ("products", "المنتجات النشطة", "products"),
+        ("stock_units", "إجمالي وحدات المخزون", "stock_levels"),
+        ("low_stock", "أصناف منخفضة المخزون", "low_stock_products"),
+        ("customers", "العملاء", "partners"),
+        ("suppliers", "الموردون", "partners"),
+        ("sales_today", "مبيعات اليوم (وحدة صغرى)", "sales"),
+        ("receivables", "صافي أرصدة العملاء", "customer_balances"),
+        ("payables", "صافي أرصدة الموردين", "supplier_balances"),
+        ("employees", "الموظفون النشطون", "employees"),
+        ("unbalanced", "قيود تحتاج مراجعة", "unbalanced_entries"),
     ]
-    stat_labels = {}
-    for i, (key, label, resource) in enumerate(stats_config):
-        card = QtFrame(cards_frame, fg_color=colors["card"], corner_radius=12, border_width=1, border_color=colors["border"])
-        # RTL: fill each row of cards starting from the right.
-        card.grid(row=i // 3, column=2 - (i % 3), sticky="nsew", padx=6, pady=6)
-        QtLabel(card, text=label, font=("Segoe UI", 12), text_color=colors["subtext"], wraplength=190).pack(padx=12, pady=(14, 4))
-        value = QtLabel(card, text="—", font=("Segoe UI", 23, "bold"), text_color=colors["text"])
-        value.pack(padx=12, pady=(0, 6))
-        QtButton(card, text="فتح", height=28, fg_color=colors["accent"], command=lambda r=resource: open_resource_window(r)).pack(padx=12, pady=(0, 12))
-        stat_labels[key] = value
+    stat_labels: dict[str, QLabel] = {}
+    for index, (key, title, resource) in enumerate(stats_config):
+        card = QFrame(cards_frame)
+        card.setStyleSheet(f"background: {colors['card']}; border: 1px solid {colors['border']}; border-radius: 10px;")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.addWidget(_label(title, card, size=10, color=colors["subtext"], wrap=True))
+        value_label = _label("—", card, size=21, bold=True, align=Qt.AlignHCenter | Qt.AlignVCenter)
+        card_layout.addWidget(value_label)
+        card_layout.addWidget(_button(card, "فتح", lambda _checked=False, r=resource: open_resource_window(r), height=28))
+        stat_labels[key] = value_label
+        cards_grid.addWidget(card, index // 3, 2 - (index % 3))
+    for col in range(3):
+        cards_grid.setColumnStretch(col, 1)
+    content_layout.addWidget(cards_frame)
 
-    quick = QtFrame(content, fg_color=colors["card"], corner_radius=12)
-    quick.pack(fill="x", padx=6, pady=(14, 6))
-    QtLabel(quick, text="إجراءات سريعة", font=("Segoe UI", 18, "bold"), text_color=colors["text"]).pack(anchor="e", padx=14, pady=(12, 8))
-    quick_buttons = [
+    quick = QFrame(content)
+    quick.setStyleSheet(f"background: {colors['card']}; border-radius: 10px;")
+    quick_layout = QVBoxLayout(quick)
+    quick_layout.setContentsMargins(12, 10, 12, 12)
+    quick_layout.addWidget(_label("إجراءات سريعة", quick, size=16, bold=True))
+    quick_row_widget = QWidget(quick)
+    quick_row = QHBoxLayout(quick_row_widget)
+    quick_row.setContentsMargins(0, 0, 0, 0)
+    quick_actions = [
         ("تسوية مخزون", lambda: _open_stock_adjustment(_refresh_dashboard)),
         ("تسجيل بيع", lambda: _open_sale_form(lambda: None)),
         ("فاتورة شراء", lambda: _open_purchase_invoice_form(lambda: None)),
@@ -988,26 +1453,34 @@ def open_admin(root):
         ("تسجيل مصروف", lambda: _open_expense_form(lambda: None)),
         ("قيد يومية", lambda: _open_journal_form(lambda: None)),
     ]
-    quick_row = QtFrame(quick, fg_color="transparent")
-    quick_row.pack(fill="x", padx=8, pady=(0, 12))
-    for label, command in quick_buttons:
-        QtButton(quick_row, text=label, command=command, height=36, fg_color=colors["accent"]).pack(side="right", expand=True, fill="x", padx=4)
+    for label, command in quick_actions:
+        quick_row.addWidget(_button(quick_row_widget, label, command, height=36))
+    quick_layout.addWidget(quick_row_widget)
+    content_layout.addWidget(quick)
+    content_layout.addStretch(1)
+    content_area.setWidget(content)
+    body_layout.addWidget(content_area, 1)
 
-    footer = QtFrame(shell, fg_color=colors["card"], height=54, corner_radius=0)
-    footer.pack(fill="x", side="bottom")
-    footer.pack_propagate(False)
-    QtButton(footer, text="خروج", width=100, fg_color=colors["danger"], command=root.close).pack(side="left", padx=12, pady=8)
-    QtButton(footer, text="تبديل المستخدم", width=140, fg_color="#6b7280", command=lambda: go_login(root)).pack(side="left", padx=6, pady=8)
-    QtLabel(footer, text="MyShop ERP — MySQL 8", text_color=colors["subtext"]).pack(side="right", padx=18)
+    footer = QFrame(shell)
+    footer.setFixedHeight(54)
+    footer.setStyleSheet(f"background: {colors['card']};")
+    footer_layout = QHBoxLayout(footer)
+    footer_layout.setContentsMargins(12, 6, 12, 6)
+    footer_layout.addWidget(_button(footer, "خروج", root.close, color=colors["danger"], hover="#a93226", width=100))
+    footer_layout.addWidget(_button(footer, "تبديل المستخدم", lambda: go_login(root), color="#6b7280", hover="#555e6b", width=140))
+    footer_layout.addStretch(1)
+    footer_layout.addWidget(_label("MyShop ERP — MySQL 8", footer, color=colors["subtext"]))
+    shell_layout.addWidget(footer)
 
     def refresh_dashboard():
         try:
             stats = svc.get_dashboard_stats()
             for key, label in stat_labels.items():
                 value = stats.get(key, 0)
-                label.configure(text=f"{value:,}" if isinstance(value, (int, float)) else str(value))
+                label.setText(f"{value:,}" if isinstance(value, (int, float)) else str(value))
         except Exception as exc:
-            dialogs.showerror("تعذر تحميل الملخص", str(exc), parent=root)
+            _message("error", "تعذر تحميل الملخص", str(exc), root)
+
     _dashboard_refresh = refresh_dashboard
     refresh_dashboard()
     return shell

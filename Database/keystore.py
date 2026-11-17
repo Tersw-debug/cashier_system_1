@@ -2,13 +2,12 @@
 
 Credential lookup order:
     1. Windows Credential Manager (through ``keyring``).
-    2. Process environment variables (useful when the ERP is launched by a
-       service wrapper that supplies environment variables).
-    3. A ``.env`` file beside the EXE, or at the project root when running
-       from source. Values found in either configuration source are saved to
-       Credential Manager on first use where possible.
-    4. An interactive username/password dialog. The entered credentials are
-       saved to Credential Manager before being returned.
+    2. A complete username/password pair from process environment variables.
+    3. A complete username/password pair from the application ``.env`` file.
+    4. A native PySide6 credential dialog (unless prompting is disabled).
+
+Connection settings (host, port and database name) are read separately by
+``Database.Schema``. Environment variables take precedence over ``.env``.
 
 Supported username variables:
     MYSQL_USERNAME, MYSHOP_DB_USERNAME, MYSHOP_DB_USER, MYSQL_USER
@@ -16,11 +15,8 @@ Supported username variables:
 Supported password variables:
     MYSHOP_DB_PASSWORD, MYSQL_PASSWORD
 
-To configure credentials manually:
-    python -m Database.keystore
-
-For a non-interactive service process, set MYSHOP_ALLOW_DB_CREDENTIAL_PROMPT=0
-and provide credentials through Credential Manager or environment variables.
+For a non-interactive process, set MYSHOP_ALLOW_DB_CREDENTIAL_PROMPT=0 and
+provide credentials through Credential Manager or a complete environment pair.
 """
 from __future__ import annotations
 
@@ -36,7 +32,7 @@ from dotenv import dotenv_values
 
 try:
     import keyring
-except ImportError:  # Configuration sources can still be read if keyring is not installed.
+except ImportError:  # Environment/.env credentials can still be used.
     keyring = None  # type: ignore[assignment]
 
 
@@ -52,19 +48,20 @@ _PASSWORD_KEYS = (
     "MYSQL_PASSWORD",
 )
 
+# Keep an internally-created QApplication alive if this module is used by a
+# command-line utility that needs to display the credential dialog.
+_OWNED_QAPPLICATION = None
+
 
 class KeyStoreError(RuntimeError):
-    """Raised when usable MySQL credentials cannot be obtained or saved."""
+    """Raised when usable MySQL credentials cannot be obtained."""
 
 
 class KeyStore:
-    """Load a matching MySQL username/password pair from configured sources.
+    """Load and save a matched MySQL username/password pair.
 
-    ``get_credentials()`` is the preferred API. ``get_username()`` and
-    ``get_password()`` are provided for compatibility with older callers.
-    Credential Manager stores the pair as one versioned JSON secret under a
-    stable account name, so the username and password cannot accidentally
-    come from different saved entries.
+    New Credential Manager entries store both values together in one versioned
+    JSON secret. Legacy username-keyed entries are still read and migrated.
     """
 
     CREDENTIAL_ACCOUNT = "mysql-database-credentials-v1"
@@ -77,124 +74,102 @@ class KeyStore:
         env_file: str | Path | None = None,
         allow_prompt: bool | None = None,
     ) -> None:
-        
         self.service = service
-        # Kept for backwards compatibility with older keyring entries where
-        # the MySQL username itself was used as the Credential Manager key.
+        # Older releases used the MySQL username as the keyring account name.
         self.account = account
         self.project_root = self._application_directory()
-        self.env_file = Path(env_file).expanduser() if env_file else self.project_root / ".env"
-        if not self.env_file.is_absolute():
-            self.env_file = (self.project_root / self.env_file).resolve()
-        self.allow_prompt = self._prompt_setting() if allow_prompt is None else bool(allow_prompt)
+        configured_env_file = Path(env_file).expanduser() if env_file else Path(".env")
+        if configured_env_file.is_absolute():
+            self.env_file = configured_env_file.resolve()
+        else:
+            self.env_file = (self.project_root / configured_env_file).resolve()
+        self.allow_prompt = (
+            self._prompt_setting() if allow_prompt is None else bool(allow_prompt)
+        )
         self._credentials_cache: tuple[str, str] | None = None
-
-
-    def delete_credentials(self) -> bool:
-        """Delete the saved MyShop database credentials."""
-
-        if keyring is None:
-            raise KeyStoreError(
-                "The 'keyring' package is not installed."
-            )
-
-        try:
-            keyring.delete_password(
-                self.service,
-                self.CREDENTIAL_ACCOUNT,
-            )
-
-            self._credentials_cache = None
-            return True
-
-        except keyring.errors.PasswordDeleteError:
-            # Credential doesn't exist or cannot be deleted.
-            return False
-
-        except Exception as exc:
-            raise KeyStoreError(
-                "Could not delete MySQL credentials from "
-                "the OS credential store."
-            ) from exc
 
     @staticmethod
     def _application_directory() -> Path:
-        """Return the directory containing the EXE, or the source project root."""
+        """Return the EXE directory or source project root."""
         if getattr(sys, "frozen", False):
-            # In a PyInstaller one-file build, __file__ may point inside the
-            # temporary _MEIPASS directory. The user's .env belongs beside EXE.
+            # PyInstaller one-file builds extract __file__ into _MEIPASS; the
+            # user's .env belongs beside the executable instead.
             return Path(sys.executable).resolve().parent
         return Path(__file__).resolve().parent.parent
 
     @staticmethod
     def _prompt_setting() -> bool:
-        value = os.environ.get("MYSHOP_ALLOW_DB_CREDENTIAL_PROMPT", "1").strip().lower()
+        value = os.environ.get(
+            "MYSHOP_ALLOW_DB_CREDENTIAL_PROMPT", "1"
+        ).strip().lower()
         return value not in {"0", "false", "no", "off"}
 
     @staticmethod
-    def _first_value(values: Mapping[str, object], names: tuple[str, ...]) -> str | None:
-        """ for name in names:
+    def _first_value(
+        values: Mapping[str, object],
+        names: tuple[str, ...],
+        *,
+        preserve_whitespace: bool = False,
+    ) -> str | None:
+        """Return the first non-empty value for the supplied aliases.
+
+        Password values can legitimately contain leading/trailing spaces, so
+        callers may request that whitespace be preserved.
+        """
+        for name in names:
             raw = values.get(name)
-            if raw is not None:
-                value = str(raw).strip()
-                if value:
-                    return value """
+            if raw is None:
+                continue
+            value = str(raw) if preserve_whitespace else str(raw).strip()
+            if value != "" and (preserve_whitespace or bool(value.strip())):
+                return value
         return None
 
     @staticmethod
     def _read_dotenv_file(path: Path) -> dict[str, str]:
-        """Read .env configuration safely."""
-
+        """Read supported settings without mutating ``os.environ``."""
         if not path.is_file():
             return {}
 
         try:
             file_values = dotenv_values(path, interpolate=False)
-
-        except (OSError, UnicodeError) as exc:
+        except (OSError, UnicodeError, ValueError) as exc:
             _LOG.warning("Could not read .env file %s: %s", path, exc)
             return {}
 
-        # Populate missing process environment variables from .env.
-        # Existing process environment variables take precedence.
-        for name, value in file_values.items():
-            if value is not None:
-                os.environ.setdefault(name, value)
-
         result: dict[str, str] = {}
-
-        # Read the first available username and password aliases.
-        for key, names in (
+        aliases = (
             ("username", _USERNAME_KEYS),
             ("password", _PASSWORD_KEYS),
             ("port", ("MYSHOP_DB_PORT",)),
             ("host", ("MYSHOP_DB_HOST",)),
             ("db_name", ("MYSHOP_DB_NAME", "MYSQL_DATABASE")),
-        ):
-            value = KeyStore._first_value(file_values, names)
-
+        )
+        for output_name, names in aliases:
+            value = KeyStore._first_value(
+                file_values,
+                names,
+                preserve_whitespace=(output_name == "password"),
+            )
             if value is not None:
-                result[key] = value
+                result[output_name] = value
 
-        # Database connection defaults.
         result.setdefault("port", "3306")
         result.setdefault("host", "localhost")
         result.setdefault("db_name", "myshop")
-
         return result
 
     def _process_credentials(self) -> tuple[str | None, str | None]:
         return (
             self._first_value(os.environ, _USERNAME_KEYS),
-            self._first_value(os.environ, _PASSWORD_KEYS),
+            self._first_value(
+                os.environ, _PASSWORD_KEYS, preserve_whitespace=True
+            ),
         )
 
     def _file_credentials(self) -> tuple[str | None, str | None]:
         values = self._read_dotenv_file(self.env_file)
-        return (
-            values.get("username"),
-            values.get("password"),
-        )
+        return values.get("username"), values.get("password")
 
     def _read_keyring_secret(self, account: str) -> str | None:
         if keyring is None:
@@ -202,46 +177,55 @@ class KeyStore:
         try:
             value = keyring.get_password(self.service, account)
             return value if value else None
-        except Exception as exc:  # keyring backends can raise non-KeyringError exceptions too
-            _LOG.debug("Credential Manager read failed for account %s: %s", account, exc)
+        except Exception as exc:
+            # Different keyring backends raise different exception classes.
+            _LOG.debug(
+                "Credential Manager read failed for account %s: %s",
+                account,
+                type(exc).__name__,
+            )
             return None
 
     def _get_keyring_credentials(
         self,
         username_hints: tuple[str | None, ...],
     ) -> tuple[str, str] | None:
-        # New format: the username and password are held together in one secret.
+        # Preferred format: username and password in the same versioned secret.
         raw = self._read_keyring_secret(self.CREDENTIAL_ACCOUNT)
         if raw:
             try:
                 saved = json.loads(raw)
+                if not isinstance(saved, dict):
+                    raise TypeError("Credential payload must be a JSON object")
                 username = str(saved.get("username", "")).strip()
                 password = str(saved.get("password", ""))
                 if username and password:
                     return username, password
-            except (json.JSONDecodeError, AttributeError, TypeError):
-                # A malformed/new-format entry should not prevent trying legacy keys.
-                _LOG.warning("Stored MyShop database credential entry is malformed.")
+            except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+                _LOG.warning(
+                    "Stored MyShop database credential entry is malformed."
+                )
 
-        # Backward compatibility with older versions that stored only the
-        # password under the MySQL username (or the old default account).
+        # Backward compatibility: previous releases stored just the password
+        # under the username (or the old default account).
         candidates: list[str] = []
         for candidate in (*username_hints, self.account, self.DEFAULT_USERNAME):
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
+
         for username in candidates:
             password = self._read_keyring_secret(username)
             if password:
                 try:
                     self._save_keyring_credentials(username, password)
-                except KeyStoreError:
-                    # The existing legacy entry remains usable for this run.
-                    pass
+                except (KeyStoreError, ValueError):
+                    # The legacy entry remains usable for this process.
+                    _LOG.debug("Could not migrate a legacy Credential Manager entry.")
                 return username, password
         return None
 
     def _save_keyring_credentials(self, username: str, password: str) -> None:
-        username = username.strip()
+        username = (username or "").strip()
         if not username:
             raise ValueError("The MySQL username cannot be empty.")
         if not password:
@@ -251,6 +235,7 @@ class KeyStore:
                 "The 'keyring' package is not installed, so credentials cannot be "
                 "saved to the OS credential store. Install it with: pip install keyring"
             )
+
         secret = json.dumps(
             {"version": 1, "username": username, "password": password},
             ensure_ascii=False,
@@ -260,13 +245,13 @@ class KeyStore:
             keyring.set_password(self.service, self.CREDENTIAL_ACCOUNT, secret)
         except Exception as exc:
             raise KeyStoreError(
-                "Could not save the MySQL credentials in the OS credential store. "
+                "Could not save MySQL credentials in the OS credential store. "
                 "Check that Windows Credential Manager is available for the "
-                "Windows account running this ERP application."
+                "Windows account running MyShop."
             ) from exc
 
     def set_credentials(self, username: str, password: str) -> None:
-        """Store both credentials in the OS credential store and cache them."""
+        """Persist both credentials and cache the matched pair."""
         username = (username or "").strip()
         if not username:
             raise ValueError("The MySQL username cannot be empty.")
@@ -277,238 +262,251 @@ class KeyStore:
         self._credentials_cache = (username, password)
 
     def set_password(self, password: str, username: str | None = None) -> None:
-        """Compatibility method for older code that only saved a password.
-
-        Prefer ``set_credentials(username, password)``. The username is taken
-        from an explicit argument, environment/.env config, or the old default.
-        """
+        """Compatibility API; prefer ``set_credentials``."""
         process_username, _ = self._process_credentials()
         file_username, _ = self._file_credentials()
-        resolved_username = username or process_username or file_username or self.account
+        resolved_username = (
+            username or process_username or file_username or self.account
+        )
         self.set_credentials(resolved_username, password)
 
-    
+    def delete_credentials(self) -> bool:
+        """Delete the new-format secret and known legacy username-keyed secrets.
+
+        Returns True if at least one entry was deleted. Missing entries are not
+        errors. Unknown Credential Manager failures are reported to the caller.
+        """
+        if keyring is None:
+            raise KeyStoreError("The 'keyring' package is not installed.")
+
+        process_username, _ = self._process_credentials()
+        file_username, _ = self._file_credentials()
+        # Also remove a legacy username-keyed entry matching the username in
+        # the current versioned payload, if that payload is still readable.
+        new_secret = self._read_keyring_secret(self.CREDENTIAL_ACCOUNT)
+        stored_username = None
+        if new_secret:
+            try:
+                payload = json.loads(new_secret)
+                if isinstance(payload, dict):
+                    stored_username = str(payload.get("username", "")).strip() or None
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        candidates: list[str] = []
+        for candidate in (
+            stored_username,
+            self._credentials_cache[0] if self._credentials_cache else None,
+            self.account,
+            process_username,
+            file_username,
+            self.DEFAULT_USERNAME,
+        ):
+            if candidate and candidate != self.CREDENTIAL_ACCOUNT and candidate not in candidates:
+                candidates.append(candidate)
+
+        deleted_any = False
+        accounts = [self.CREDENTIAL_ACCOUNT, *candidates]
+        try:
+            for account in accounts:
+                try:
+                    keyring.delete_password(self.service, account)
+                    deleted_any = True
+                except keyring.errors.PasswordDeleteError:
+                    # The entry does not exist (or the backend reports it as absent).
+                    continue
+                except Exception as exc:
+                    raise KeyStoreError(
+                        f"Could not delete MySQL credentials for Credential Manager "
+                        f"entry {account!r}."
+                    ) from exc
+        finally:
+            self._credentials_cache = None
+        return deleted_any
+
     def _prompt_for_credentials(
         self,
         username_hint: str | None = None,
         parent=None,
     ) -> tuple[str, str]:
-
+        """Collect credentials in a native, modal PySide6 dialog."""
         if not self.allow_prompt:
             raise KeyStoreError(
-                "Interactive credential prompting is disabled."
+                "Interactive credential prompting is disabled. Configure "
+                "Credential Manager or a complete environment/.env credential pair."
             )
 
         try:
-            import tkinter as tk
-            from tkinter import messagebox, ttk
+            from PySide6.QtCore import Qt, QThread
+            from PySide6.QtWidgets import (
+                QApplication,
+                QDialog,
+                QDialogButtonBox,
+                QFormLayout,
+                QLabel,
+                QLineEdit,
+                QMessageBox,
+                QVBoxLayout,
+                QWidget,
+            )
         except Exception as exc:
             raise KeyStoreError(
-                "Could not load the credential dialog."
+                "Could not load the native PySide6 credential dialog."
             ) from exc
 
-        owned_root = None
-        dialog = None
-        root = parent
-
-        try:
-            if root is None:
-                owned_root = tk.Tk()
-                owned_root.withdraw()
-                root = owned_root
-
-            dialog = tk.Toplevel(root)
-            dialog.title("MyShop — MySQL Database Credentials")
-            dialog.resizable(False, False)
-            dialog.transient(root)
-
-            outer = ttk.Frame(dialog, padding=16)
-            outer.grid(row=0, column=0, sticky="nsew")
-
-            ttk.Label(
-                outer,
-                text=(
-                    "Database credentials were not found. Enter the MySQL "
-                    "account used by MyShop. They will be saved to Windows "
-                    "Credential Manager."
-                ),
-                wraplength=390,
-                justify="left",
-            ).grid(
-                row=0, column=0, columnspan=2,
-                sticky="w", pady=(0, 12)
-            )
-
-            username_var = tk.StringVar(
-                master=dialog,
-                value=username_hint or self.account or "",
-            )
-            password_var = tk.StringVar(master=dialog)
-
-            ttk.Label(
-                outer, text="MySQL username:"
-            ).grid(row=1, column=0, sticky="w", pady=4)
-
-            username_entry = ttk.Entry(
-                outer, textvariable=username_var, width=38
-            )
-            username_entry.grid(
-                row=1, column=1, sticky="ew", pady=4
-            )
-
-            ttk.Label(
-                outer, text="MySQL password:"
-            ).grid(row=2, column=0, sticky="w", pady=4)
-
-            password_entry = ttk.Entry(
-                outer, textvariable=password_var,
-                width=38, show="•"
-            )
-            password_entry.grid(
-                row=2, column=1, sticky="ew", pady=4
-            )
-
-            result: dict[str, str] = {}
-
-            def submit():
-                username = username_var.get().strip()
-                password = password_var.get()
-
-                if not username:
-                    messagebox.showerror(
-                        "Missing username",
-                        "Enter the MySQL username.",
-                        parent=dialog,
-                    )
-                    username_entry.focus_set()
-                    return
-
-                if not password:
-                    messagebox.showerror(
-                        "Missing password",
-                        "Enter the MySQL password.",
-                        parent=dialog,
-                    )
-                    password_entry.focus_set()
-                    return
-
-                result["username"] = username
-                result["password"] = password
-                dialog.destroy()
-
-            def cancel():
-                dialog.destroy()
-
-            buttons = ttk.Frame(outer)
-            buttons.grid(
-                row=3, column=0, columnspan=2,
-                sticky="e", pady=(12, 0)
-            )
-
-            ttk.Button(
-                buttons, text="Cancel",
-                command=cancel,
-            ).grid(row=0, column=0, padx=(0, 8))
-
-            ttk.Button(
-                buttons, text="Save credentials",
-                command=submit,
-            ).grid(row=0, column=1)
-
-            dialog.protocol("WM_DELETE_WINDOW", cancel)
-            dialog.bind("<Return>", lambda event: submit())
-            dialog.bind("<Escape>", lambda event: cancel())
-
-            dialog.update_idletasks()
-
-            width = dialog.winfo_reqwidth()
-            height = dialog.winfo_reqheight()
-
-            x = max(0, (dialog.winfo_screenwidth() - width) // 2)
-            y = max(0, (dialog.winfo_screenheight() - height) // 2)
-
-            dialog.geometry(f"{width}x{height}+{x}+{y}")
-
-            dialog.deiconify()
-            dialog.lift()
-            dialog.grab_set()
-            username_entry.focus_set()
-
-            root.wait_window(dialog)
-
-            if not result:
+        global _OWNED_QAPPLICATION
+        app = QApplication.instance()
+        if app is None:
+            try:
+                _OWNED_QAPPLICATION = QApplication(sys.argv[:1])
+                app = _OWNED_QAPPLICATION
+            except Exception as exc:
                 raise KeyStoreError(
-                    "Database credential setup was cancelled."
-                )
+                    "No QApplication is available to display the database "
+                    "credential dialog. Start the Qt application first or "
+                    "configure non-interactive credentials."
+                ) from exc
 
-            return result["username"], result["password"]
-
-        except KeyStoreError:
-            raise
-
-        except Exception as exc:
-            _LOG.exception("Credential dialog initialization failed")
-
+        if QThread.currentThread() != app.thread():
             raise KeyStoreError(
-                f"Could not display the MySQL credential dialog: {exc}"
-            ) from exc
+                "The database credential dialog must be opened on the Qt GUI thread."
+            )
 
-        finally:
-            if dialog is not None:
-                try:
-                    if dialog.winfo_exists():
-                        dialog.destroy()
-                except Exception:
-                    pass
+        if parent is None:
+            parent = app.activeWindow()
+        if parent is not None and not isinstance(parent, QWidget):
+            parent = None
 
-            if owned_root is not None:
-                try:
-                    owned_root.destroy()
-                except Exception:
-                    pass
+        dialog = QDialog(parent)
+        dialog.setWindowTitle("MyShop — MySQL Database Credentials")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(430)
+        dialog.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
 
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(14)
+
+        description = QLabel(
+            "Database credentials were not found. Enter the MySQL account "
+            "used by MyShop. Credentials will be saved in Windows Credential "
+            "Manager when it is available."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        username_edit = QLineEdit(dialog)
+        username_edit.setText(username_hint or self.account or self.DEFAULT_USERNAME)
+        username_edit.setPlaceholderText("MySQL username")
+        password_edit = QLineEdit(dialog)
+        password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        password_edit.setPlaceholderText("MySQL password")
+        form.addRow("MySQL username:", username_edit)
+        form.addRow("MySQL password:", password_edit)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Save,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setDefault(True)
+        layout.addWidget(buttons)
+
+        def validate_and_accept() -> None:
+            if not username_edit.text().strip():
+                QMessageBox.warning(dialog, "Missing username", "Enter the MySQL username.")
+                username_edit.setFocus()
+                return
+            if not password_edit.text():
+                QMessageBox.warning(dialog, "Missing password", "Enter the MySQL password.")
+                password_edit.setFocus()
+                return
+            dialog.accept()
+
+        buttons.accepted.connect(validate_and_accept)
+        buttons.rejected.connect(dialog.reject)
+        password_edit.returnPressed.connect(validate_and_accept)
+        username_edit.returnPressed.connect(password_edit.setFocus)
+        username_edit.setFocus()
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            raise KeyStoreError("Database credential setup was cancelled.")
+
+        username = username_edit.text().strip()
+        password = password_edit.text()
+        if not username or not password:
+            # Defensive check in case the dialog is changed later.
+            raise KeyStoreError("A MySQL username and password are required.")
+        return username, password
 
     def get_credentials(self) -> tuple[str, str]:
-        """Return ``(username, password)`` from the best available source."""
-
-        if self._credentials_cache:
+        """Return a matched ``(username, password)`` pair from the best source."""
+        if self._credentials_cache is not None:
             return self._credentials_cache
 
         process_username, process_password = self._process_credentials()
         file_username, file_password = self._file_credentials()
         username_hints = (process_username, file_username, self.account)
 
-        # 1. Existing OS Credential Manager entry.
+        # 1. Credential Manager has the highest priority.
         stored = self._get_keyring_credentials(username_hints)
         if stored:
             self._credentials_cache = stored
             self.account = stored[0]
             return stored
 
-        # 2. Process environment (can be supplied by a service wrapper). Fill
-        #    missing values from .env, then persist the pair for future runs.
-        # 3. .env beside the EXE/project root, likewise imported once.
-        username = process_username or file_username
-        password = process_password or file_password
-        if username and password:
-            credentials = (username, password)
+        # Never combine a username from one source with a password from another:
+        # that can silently authenticate as the wrong MySQL account.
+        credentials: tuple[str, str] | None = None
+        if process_username and process_password:
+            credentials = (process_username, process_password)
+        elif file_username and file_password:
+            credentials = (file_username, file_password)
+        elif (process_username or process_password) or (file_username or file_password):
+            _LOG.warning(
+                "A partial MySQL credential pair was found in environment/.env; "
+                "the values were not combined across sources."
+            )
+
+        if credentials:
             try:
                 self._save_keyring_credentials(*credentials)
             except KeyStoreError as exc:
-                # Configured credentials remain usable for this run even if
-                # Credential Manager is unavailable; the .env/env source stays
-                # as a fallback on the next run.
+                # Environment/.env credentials remain usable for this run.
                 _LOG.warning("Could not persist configured DB credentials: %s", exc)
-            self.account = username
+            self.account = credentials[0]
             self._credentials_cache = credentials
             return credentials
 
-        # 4. Developer/user fallback. Prompt only when credentials are missing.
-        username_hint = username or self.account or self.DEFAULT_USERNAME
-        prompted_username, prompted_password = self._prompt_for_credentials(username_hint)
-        self._save_keyring_credentials(prompted_username, prompted_password)
-        self.account = prompted_username
-        self._credentials_cache = (prompted_username, prompted_password)
+        # 4. Interactive fallback. If Credential Manager is unavailable, the
+        # entered pair is still valid for this process; do not discard it.
+        username, password = self._prompt_for_credentials(
+            process_username or file_username or self.account or self.DEFAULT_USERNAME
+        )
+        try:
+            self._save_keyring_credentials(username, password)
+        except KeyStoreError as exc:
+            _LOG.warning("Credentials will be used for this session only: %s", exc)
+            try:
+                from PySide6.QtWidgets import QApplication, QMessageBox
+
+                parent = QApplication.activeWindow() if QApplication.instance() else None
+                QMessageBox.warning(
+                    parent,
+                    "Credential Manager unavailable",
+                    "The MySQL credentials could not be saved in Windows "
+                    "Credential Manager. They will be used for this session "
+                    "only; configure Credential Manager or environment "
+                    "variables to avoid being prompted again.",
+                )
+            except Exception:
+                pass
+
+        self.account = username
+        self._credentials_cache = (username, password)
         return self._credentials_cache
 
     def get_username(self) -> str:
@@ -521,6 +519,8 @@ class KeyStore:
 
 
 if __name__ == "__main__":
+    # This explicit setup utility is intentionally console-based. It does not
+    # import or start the ERP GUI.
     username = input(f"MySQL username [{KeyStore.DEFAULT_USERNAME}]: ").strip()
     username = username or KeyStore.DEFAULT_USERNAME
     password = getpass.getpass("MySQL password for the MyShop user: ")

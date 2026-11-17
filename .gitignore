@@ -12,3 +12,7 @@ seed_print_catalog_once.py
 build
 program.spec
 temp.txt
+seed_catalog.py
+*__pycache__
+*.vscode
+seed_print_catalog.py

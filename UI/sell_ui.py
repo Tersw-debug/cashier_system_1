@@ -1,20 +1,43 @@
-"""Arabic point-of-sale UI backed by the current MyShop ERP schema."""
+"""Native PySide6 Arabic point-of-sale UI for the MyShop ERP schema.
+
+All database operations are delegated to Services.cashier_service.  This
+module uses PySide6 widgets, layouts, signals, dialogs, and item models
+directly, without importing UI.qt_compat.
+"""
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import os
 import subprocess
 import sys
-from UI.qt_compat import (
-    BOTH, CENTER, END, LEFT, RIGHT, X, Y,
-    StringVar, BooleanVar,
-    QtFrame, QtLabel, QtButton, QtLineEdit, QtComboBox, QtCheckBox,
-    QtScrollableFrame, QtTextEdit, QtDialog, QtTreeWidget, QtScrollBar,
-    QtStyle, TclError, dialogs, colorchooser,
+from typing import Any, Callable
+
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt, QTimer
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
 )
+
 from UI.common import is_dark
 from Services.cashier_service import (
-    add_customer_debt,          # NEW
+    add_customer_debt,
     close_cashier_shift,
     create_cashier_return,
     create_cashier_sale,
@@ -23,682 +46,881 @@ from Services.cashier_service import (
     get_cashier_context,
     get_cashier_product_groups,
     get_cashier_products,
-    get_debt_customers,         # NEW
+    get_debt_customers,
     get_open_shift,
     get_returnable_sales_items,
     get_username_id,
     minor_to_money,
     money_to_minor,
     open_cashier_shift,
-    pay_customer_debt,          # NEW
-    remove_customer_debt,       # NEW
-    update_customer_debt,       # NEW
+    pay_customer_debt,
+    remove_customer_debt,
+    update_customer_debt,
 )
 
 
 WALK_IN_LABEL = "عميل نقدي"
 
 
-def _valid_hex(color):
-    c = (color or "").strip()
-    if len(c) == 7 and c[0] == "#" and all(ch in "0123456789abcdefABCDEF" for ch in c[1:]):
-        return c
+def _valid_hex(color: Any) -> str | None:
+    value = (color or "").strip()
+    if len(value) == 7 and value[0] == "#" and all(ch in "0123456789abcdefABCDEF" for ch in value[1:]):
+        return value
     return None
 
 
-def _rgb(color):
-    return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+def _rgb(color: str) -> tuple[int, int, int]:
+    return tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
 
 
-def _shade(color, factor):
-    return "#%02x%02x%02x" % tuple(max(0, min(255, int(v * factor))) for v in _rgb(color))
+def _shade(color: str, factor: float) -> str:
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(value * factor))) for value in _rgb(color))
 
 
-def _text_on(color):
-    r, g, b = _rgb(color)
-    return "#000000" if (0.299 * r + 0.587 * g + 0.114 * b) > 150 else "#ffffff"
+def _text_on(color: str) -> str:
+    red, green, blue = _rgb(color)
+    return "#000000" if (0.299 * red + 0.587 * green + 0.114 * blue) > 150 else "#ffffff"
 
 
-def _quantity(value) -> Decimal:
+def _quantity(value: Any) -> Decimal:
     try:
-        qty = Decimal(str(value).strip().replace(",", ""))
+        quantity = Decimal(str(value).strip().replace(",", ""))
     except (InvalidOperation, AttributeError):
         raise ValueError("أدخل كمية رقمية صحيحة") from None
-    if not qty.is_finite() or qty <= 0:
+    if not quantity.is_finite() or quantity <= 0:
         raise ValueError("الكمية يجب أن تكون أكبر من صفر")
-    return qty
+    return quantity
 
 
-def _qty_text(value) -> str:
+def _qty_text(value: Any) -> str:
     return f"{value.normalize():f}" if isinstance(value, Decimal) else str(value)
 
 
-def _line_totals(product, quantity: Decimal):
-    """Return base, tax, and total in integer minor currency units."""
+def _line_totals(product: tuple, quantity: Decimal) -> tuple[int, int, int]:
+    """Return base, tax, and total using integer minor currency units."""
     price_minor = int(product[4])
     tax_bp = int(product[9] or 0)
-    base = int(
-        (quantity * Decimal(price_minor)).quantize(
-            Decimal("1"), rounding=ROUND_HALF_UP
-        )
-    )
-    tax = int(
-        (Decimal(base) * Decimal(tax_bp) / Decimal(10000)).quantize(
-            Decimal("1"), rounding=ROUND_HALF_UP
-        )
-    )
+    base = int((quantity * Decimal(price_minor)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    tax = int((Decimal(base) * Decimal(tax_bp) / Decimal(10000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return base, tax, base + tax
 
 
-def _unique_labels(rows, label_builder):
-    """Create display labels without silently overwriting duplicate IDs."""
-    labels = {}
-    for row in rows:
-        label = label_builder(row)
-        if label in labels:
-            label = f"{label} (#{int(row[0])})"
-        labels[label] = int(row[0])
-    return labels
+def _ui_palette(dark: bool) -> dict[str, str]:
+    """Return the high-contrast color palette used by the cashier UI."""
+    if dark:
+        return {
+            "background": "#0B1220", "surface": "#111B2E", "surface_alt": "#18263B",
+            "input": "#0F1A2B", "border": "#2A3B55", "text": "#E8EEF7", "muted": "#A7B4C7",
+            "primary": "#3478F6", "primary_hover": "#2864D8", "success": "#15966A",
+            "success_hover": "#107A56", "danger": "#D94B5B", "danger_hover": "#BD3948",
+            "warning": "#B7791F", "warning_hover": "#965F16", "info": "#326FC2",
+            "info_hover": "#275A9E", "neutral": "#526176", "neutral_hover": "#405066",
+            "selection": "#285AA8",
+        }
+    return {
+        "background": "#F2F5F9", "surface": "#FFFFFF", "surface_alt": "#F7F9FC",
+        "input": "#FBFCFE", "border": "#DCE4EE", "text": "#172033", "muted": "#66758A",
+        "primary": "#2563EB", "primary_hover": "#1D4ED8", "success": "#13865B",
+        "success_hover": "#0F704B", "danger": "#C83B4A", "danger_hover": "#AD2F3D",
+        "warning": "#B7791F", "warning_hover": "#965F16", "info": "#2868B2",
+        "info_hover": "#20558F", "neutral": "#64748B", "neutral_hover": "#526176",
+        "selection": "#DCEBFF",
+    }
 
 
-def build_sell_ui(parent, username):
-    """Mount the cashier UI into a QWidget or the supplied PySide6 main window."""
-    from PySide6.QtWidgets import QMainWindow
+
+class _CartTableModel(QAbstractTableModel):
+    """Model for the sale cart; row identity is the product ID, not row number."""
+
+    HEADERS = ("الصنف", "الباركود", "سعر الوحدة", "الكمية", "الإجمالي", "المتاح")
+
+    def __init__(self, cart: dict[int, dict[str, Any]], parent: QWidget | None = None):
+        super().__init__(parent)
+        self._cart = cart
+        self._product_ids: list[int] = list(cart)
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self._product_ids)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self.HEADERS)
+
+    def headerData(self, section: int, orientation: Qt.Orientation,
+                   role: int = Qt.ItemDataRole.DisplayRole):  # noqa: N802
+        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
+            if 0 <= section < len(self.HEADERS):
+                return self.HEADERS[section]
+        if role == Qt.ItemDataRole.TextAlignmentRole and orientation == Qt.Orientation.Horizontal:
+            return int(Qt.AlignmentFlag.AlignCenter)
+        return None
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self._product_ids)):
+            return None
+
+        product_id = self._product_ids[index.row()]
+        entry = self._cart.get(product_id)
+        if entry is None:
+            return None
+
+        if role == Qt.ItemDataRole.UserRole:
+            return product_id
+
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            alignment = (
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                if index.column() == 0 else
+                Qt.AlignmentFlag.AlignCenter
+            )
+            return int(alignment)
+
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+
+        product = entry["product"]
+        quantity = entry["quantity"]
+        _base, _tax, line_total = _line_totals(product, quantity)
+        stock_text = f"{float(product[5]):g}" if bool(product[7]) else "—"
+        values = (
+            str(product[1]),
+            str(product[3] or ""),
+            minor_to_money(product[4]),
+            _qty_text(quantity),
+            minor_to_money(line_total),
+            stock_text,
+        )
+        return values[index.column()]
+
+    def refresh(self) -> None:
+        self.beginResetModel()
+        self._product_ids = list(self._cart)
+        self.endResetModel()
+
+    def product_id_at(self, row: int) -> int | None:
+        if 0 <= row < len(self._product_ids):
+            return self._product_ids[row]
+        return None
+
+    def row_for_product(self, product_id: int) -> int:
+        try:
+            return self._product_ids.index(int(product_id))
+        except ValueError:
+            return -1
+
+
+class _DebtTableModel(QAbstractTableModel):
+    """Source model for debtors; the proxy model handles interactive filtering."""
+
+    HEADERS = ("الرقم", "العميل", "الهاتف", "الدين الحالي")
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._records: list[tuple[int, str, str, int]] = []
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self._records)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self.HEADERS)
+
+    def headerData(self, section: int, orientation: Qt.Orientation,
+                   role: int = Qt.ItemDataRole.DisplayRole):  # noqa: N802
+        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
+            if 0 <= section < len(self.HEADERS):
+                return self.HEADERS[section]
+        if role == Qt.ItemDataRole.TextAlignmentRole and orientation == Qt.Orientation.Horizontal:
+            return int(Qt.AlignmentFlag.AlignCenter)
+        return None
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self._records)):
+            return None
+
+        record = self._records[index.row()]
+        customer_id, name, phone, debt_minor = record
+
+        if role == Qt.ItemDataRole.UserRole:
+            return customer_id
+        if role == Qt.ItemDataRole.UserRole + 1:
+            # Numeric sort values, should sorting be enabled by the UI later.
+            return (customer_id, name.casefold(), phone.casefold(), debt_minor)[index.column()]
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return int(Qt.AlignmentFlag.AlignCenter)
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+
+        return (
+            str(customer_id),
+            name,
+            phone,
+            minor_to_money(debt_minor),
+        )[index.column()]
+
+    def set_records(self, records: list[tuple[int, str, str, int]]) -> None:
+        self.beginResetModel()
+        self._records = list(records)
+        self.endResetModel()
+
+    def record_at(self, row: int) -> tuple[int, str, int] | None:
+        if not (0 <= row < len(self._records)):
+            return None
+        customer_id, name, _phone, debt_minor = self._records[row]
+        return customer_id, name, debt_minor
+
+
+def _configure_table_view(view: QTableView, palette: dict[str, str],
+                          widths: tuple[int, ...]) -> None:
+    """Configure a JavaFX-like table: draggable columns and user-resizable widths."""
+    view.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    view.setAlternatingRowColors(True)
+    view.setShowGrid(True)
+    view.setWordWrap(False)
+    view.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    view.verticalHeader().setVisible(False)
+    view.verticalHeader().setDefaultSectionSize(36)
+
+    header = view.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    header.setSectionsMovable(True)
+    header.setSectionsClickable(True)
+    header.setHighlightSections(False)
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(55)
+    header.setToolTip("اسحب عنوان العمود لتغيير ترتيبه، واسحب الحد الفاصل لتغيير عرضه.")
+
+    for column, width in enumerate(widths):
+        view.setColumnWidth(column, width)
+
+    view.setStyleSheet(
+        f"QTableView {{ background: {palette['surface']}; color: {palette['text']}; "
+        f"gridline-color: {palette['border']}; border: 0; "
+        f"selection-background-color: {palette['selection']}; }}"
+        f"QTableView::item {{ padding: 5px; }}"
+        f"QHeaderView::section {{ background: {palette['surface_alt']}; "
+        f"color: {palette['text']}; padding: 8px; border: 0; "
+        f"border-bottom: 1px solid {palette['border']}; font-weight: 600; }}"
+    )
+
+def _make_button(parent: QWidget, label: str, command: Callable | None = None,
+                 kind: str = "neutral", palette: dict[str, str] | None = None,
+                 width: int | None = None, height: int = 36,
+                 font_size: int = 10) -> QPushButton:
+    palette = palette or _ui_palette(is_dark())
+    color_map = {
+        "primary": (palette["primary"], palette["primary_hover"]),
+        "success": (palette["success"], palette["success_hover"]),
+        "danger": (palette["danger"], palette["danger_hover"]),
+        "warning": (palette["warning"], palette["warning_hover"]),
+        "info": (palette["info"], palette["info_hover"]),
+        "neutral": (palette["neutral"], palette["neutral_hover"]),
+    }
+    foreground, hover = color_map.get(kind, color_map["neutral"])
+    button = QPushButton(label, parent)
+    button.setCursor(Qt.PointingHandCursor)
+    button.setMinimumHeight(height)
+    if width is not None:
+        button.setFixedWidth(width)
+    button.setFont(QFont("Segoe UI", font_size, QFont.Bold))
+    button.setStyleSheet(
+        "QPushButton {"
+        f"background: {foreground}; color: #FFFFFF; border: 0; border-radius: 8px;"
+        "padding: 5px 10px;"
+        "}"
+        f"QPushButton:hover {{ background: {hover}; }}"
+        "QPushButton:disabled { background: #858b94; color: #e5e7eb; }"
+    )
+    if command is not None:
+        button.clicked.connect(lambda _checked=False: command())
+    return button
+
+
+def _make_label(parent: QWidget, text: str, palette: dict[str, str],
+                *, size: int = 10, bold: bool = False,
+                color: str | None = None, wrap: bool = False,
+                align: Qt.AlignmentFlag = Qt.AlignRight | Qt.AlignVCenter) -> QLabel:
+    label = QLabel(text, parent)
+    label.setAlignment(align)
+    label.setWordWrap(wrap)
+    label.setFont(QFont("Segoe UI", size, QFont.Bold if bold else QFont.Normal))
+    label.setStyleSheet(f"color: {color or palette['text']}; background: transparent;")
+    return label
+
+
+def _style_line_edit(edit: QLineEdit, palette: dict[str, str], *, height: int = 38,
+                     align: Qt.AlignmentFlag = Qt.AlignRight) -> QLineEdit:
+    edit.setMinimumHeight(height)
+    edit.setAlignment(align)
+    edit.setFont(QFont("Segoe UI", 10))
+    edit.setStyleSheet(
+        f"QLineEdit {{ background: {palette['input']}; color: {palette['text']}; "
+        f"border: 1px solid {palette['border']}; border-radius: 8px; padding: 6px 9px; }}"
+        f"QLineEdit:focus {{ border: 1px solid {palette['primary']}; }}"
+    )
+    return edit
+
+
+def _style_combo(combo: QComboBox, palette: dict[str, str], height: int = 38) -> QComboBox:
+    combo.setMinimumHeight(height)
+    combo.setStyleSheet(
+        f"QComboBox {{ background: {palette['input']}; color: {palette['text']}; "
+        f"border: 1px solid {palette['border']}; border-radius: 8px; padding: 5px 8px; }}"
+        f"QComboBox QAbstractItemView {{ background: {palette['surface']}; color: {palette['text']}; "
+        f"selection-background-color: {palette['selection']}; }}"
+    )
+    return combo
+
+
+def _message(kind: str, title: str, message: str, parent: QWidget | None = None) -> None:
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(str(message))
+    box.setIcon({
+        "info": QMessageBox.Information,
+        "warning": QMessageBox.Warning,
+        "error": QMessageBox.Critical,
+    }.get(kind, QMessageBox.Information))
+    box.setLayoutDirection(Qt.RightToLeft)
+    box.exec()
+
+
+def _ask_yes_no(title: str, message: str, parent: QWidget | None = None) -> bool:
+    return QMessageBox.question(
+        parent, title, message,
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.No,
+    ) == QMessageBox.Yes
+
+
+def _clear_layout(layout: QVBoxLayout | QHBoxLayout | QGridLayout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child_layout = item.layout()
+        if widget is not None:
+            widget.deleteLater()
+        elif child_layout is not None:
+            _clear_layout(child_layout)
+
+
+def _clear_widget_contents(widget: QWidget) -> QVBoxLayout:
+    layout = widget.layout()
+    if layout is None:
+        layout = QVBoxLayout(widget)
+    else:
+        _clear_layout(layout)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    return layout  # type: ignore[return-value]
+
+
+def _install_page(parent: QWidget, page: QWidget) -> None:
     if isinstance(parent, QMainWindow):
-        page = QtFrame(None)
         if hasattr(parent, "set_page"):
             parent.set_page(page)
         else:
             parent.setCentralWidget(page)
-        parent = page
-    top = parent.winfo_toplevel()
+        return
+    layout = parent.layout()
+    if layout is None:
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(0, 0, 0, 0)
+    else:
+        _clear_layout(layout)
+    layout.addWidget(page)
 
+
+def _new_dialog(parent: QWidget, title: str, palette: dict[str, str],
+                size: tuple[int, int] | None = None) -> QDialog:
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.setLayoutDirection(Qt.RightToLeft)
+    dialog.setStyleSheet(f"QDialog {{ background: {palette['surface']}; color: {palette['text']}; }}")
+    if size:
+        dialog.resize(*size)
+    dialog.setModal(True)
+    return dialog
+
+
+class _ColorSwatch(QLabel):
+    """Small reusable product-color preview used only in quick product buttons."""
+
+    def __init__(self, color: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setStyleSheet(f"background: {color};")
+
+
+def build_sell_ui(parent: QWidget, username: str):
+    """Mount the cashier screen into a QWidget or the supplied PySide6 main window."""
+    if isinstance(parent, QMainWindow):
+        page = QWidget()
+        _install_page(parent, page)
+    else:
+        page = parent
+        _clear_widget_contents(page)
+
+    top = parent.window()
     try:
         cashier_id = get_username_id(str(username))
     except Exception as exc:
-        dialogs.showerror(
-            "تعذر فتح الكاشير",
-            f"تعذر الوصول إلى حساب الكاشير:\n{type(exc).__name__}: {exc}",
-            parent=top,
-        )
+        _message("error", "تعذر فتح الكاشير", f"تعذر الوصول إلى حساب الكاشير:\n{type(exc).__name__}: {exc}", top)
         return False
 
     if cashier_id is None:
-        dialogs.showerror(
-            "خطأ تسجيل الدخول",
-            f"لم يتم العثور على حساب مستخدم نشط باسم: {username}",
-            parent=top,
-        )
+        _message("error", "خطأ تسجيل الدخول", f"لم يتم العثور على حساب مستخدم نشط باسم: {username}", top)
         return False
 
     dark = is_dark()
-    bg = "#121212" if dark else "#f4f6f8"
-    card = "#1e1e1e" if dark else "#ffffff"
-    text = "#ffffff" if dark else "#101820"
-    muted = "#aab4be" if dark else "#59636e"
-
-    for widget in parent.winfo_children():
-        widget.destroy()
-
+    palette = _ui_palette(dark)
     try:
         context = get_cashier_context(cashier_id)
     except Exception as exc:
-        dialogs.showerror(
-            "خطأ قاعدة البيانات",
-            f"تعذر تحميل بيانات الكاشير:\n{type(exc).__name__}: {exc}",
-            parent=top,
-        )
+        _message("error", "خطأ قاعدة البيانات", f"تعذر تحميل بيانات الكاشير:\n{type(exc).__name__}: {exc}", top)
         return False
 
     warehouses = context.get("warehouses", [])
     methods = context.get("payment_methods", [])
     if not warehouses:
-        dialogs.showerror(
-            "لا يوجد مخزن",
-            "أضف مخزنًا نشطًا من صفحة الإدارة قبل البيع.",
-            parent=top,
-        )
+        _message("error", "لا يوجد مخزن", "أضف مخزنًا نشطًا من صفحة الإدارة قبل البيع.", top)
         return False
     if not methods:
-        dialogs.showerror(
-            "لا توجد طرق دفع",
-            "أضف طريقة دفع نشطة مرتبطة بحساب أستاذ نشط.",
-            parent=top,
-        )
+        _message("error", "لا توجد طرق دفع", "أضف طريقة دفع نشطة مرتبطة بحساب أستاذ نشط.", top)
         return False
 
-    warehouse_labels = {
-        f"{int(row[0])} — {row[1]}": int(row[0]) for row in warehouses
-    }
-    default_wh = next((row for row in warehouses if row[2]), warehouses[0])
-    warehouse_var = StringVar(value=f"{int(default_wh[0])} — {default_wh[1]}")
-
-    method_labels = {}
+    warehouse_labels = {f"{int(row[0])} — {row[1]}": int(row[0]) for row in warehouses}
+    default_warehouse = next((row for row in warehouses if row[2]), warehouses[0])
+    method_labels: dict[str, int] = {}
     for row in methods:
         label = f"{row[1]} ({row[2]})"
         if label in method_labels:
             label = f"{label} (#{int(row[0])})"
         method_labels[label] = int(row[0])
-    method_var = StringVar(value=next(iter(method_labels)))
+
+    customers = list(context.get("customers", []))
+    customer_labels: dict[str, int | None] = {WALK_IN_LABEL: None}
+    for customer_id, customer_name, phone in customers:
+        label = f"{customer_name} — {phone}" if phone else str(customer_name)
+        if label in customer_labels:
+            label = f"{label} (#{customer_id})"
+        customer_labels[label] = int(customer_id)
 
     initial_shift = context.get("open_shift")
     last_shift = context.get("last_shift")
     remembered_shift = initial_shift or last_shift
-    current_shift = {
+    current_shift: dict[str, Any] = {
         "row": initial_shift,
         "last_id": int(remembered_shift[0]) if remembered_shift else None,
     }
-    customers = list(context.get("customers", []))
-    customer_labels = {WALK_IN_LABEL: None}
-    for cid, cname, phone in customers:
-        label = f"{cname} — {phone}" if phone else str(cname)
-        if label in customer_labels:
-            label = f"{label} (#{cid})"
-        customer_labels[label] = int(cid)
+    cart: dict[int, dict[str, Any]] = {}
 
-    customer_var = StringVar(value=WALK_IN_LABEL)
-    new_customer_var = BooleanVar(value=False)
-    new_customer_name = StringVar()
-    new_customer_phone = StringVar()
-    paid_var = StringVar(value="0")
-    qty_var = StringVar(value="1")
-    search_var = StringVar()
-    total_var = StringVar(value=minor_to_money(0))
-    shift_text_var = StringVar(value="جاري تحميل حالة الوردية...")
-    cart: dict[int, dict] = {}
+    # ---------------- page and header ----------------
+    page.setLayoutDirection(Qt.RightToLeft)
+    page.setStyleSheet(f"background: {palette['background']}; color: {palette['text']};")
+    root_layout = page.layout()
+    if root_layout is None:
+        root_layout = QVBoxLayout(page)
+    root_layout.setContentsMargins(14, 14, 14, 14)
+    root_layout.setSpacing(12)
 
-    # ---------------- main layout ----------------
-    main = QtFrame(parent, fg_color="transparent")
-    main.pack(fill=BOTH, expand=True, padx=12, pady=12)
+    main = QWidget(page)
+    main.setLayoutDirection(Qt.RightToLeft)
+    main_layout = QVBoxLayout(main)
+    main_layout.setContentsMargins(0, 0, 0, 0)
+    main_layout.setSpacing(12)
+    root_layout.addWidget(main)
 
-    toolbar = QtFrame(main, fg_color=card, corner_radius=12)
-    toolbar.pack(fill=X, pady=(0, 10))
-    QtLabel(
-        toolbar, text="نقطة البيع", font=("Segoe UI", 23, "bold"), text_color=text
-    ).pack(side=RIGHT, padx=14, pady=8)
-    QtLabel(toolbar, text="المخزن", text_color=text).pack(
-        side=RIGHT, padx=(8, 2)
-    )
-    warehouse_menu = QtComboBox(
-        toolbar,
-        variable=warehouse_var,
-        values=list(warehouse_labels),
-        state="readonly",
-        width=190,
-    )
-    warehouse_menu.pack(side=RIGHT, padx=4, pady=8)
-    shift_status_label = QtLabel(
-        toolbar, textvariable=shift_text_var, text_color=muted
-    )
-    shift_status_label.pack(side=LEFT, padx=8)
-    shift_button = QtButton(toolbar, text="الوردية بدء", width=120)
-    shift_button.pack(side=LEFT, padx=10, pady=8)
+    toolbar = QFrame(main)
+    toolbar.setStyleSheet(f"background: {palette['surface']}; border-radius: 14px;")
+    toolbar_layout = QHBoxLayout(toolbar)
+    toolbar_layout.setContentsMargins(18, 10, 18, 10)
+    toolbar_layout.setSpacing(9)
 
-    content = QtFrame(main, fg_color="transparent")
-    content.pack(fill=BOTH, expand=True)
+    title_block = QWidget(toolbar)
+    title_layout = QVBoxLayout(title_block)
+    title_layout.setContentsMargins(0, 0, 0, 0)
+    title_layout.setSpacing(1)
+    title_layout.addWidget(_make_label(title_block, "نقطة البيع", palette, size=19, bold=True))
+    title_layout.addWidget(_make_label(title_block, "إدارة المبيعات والفواتير", palette, size=9, color=palette["muted"]))
+    toolbar_layout.addWidget(title_block)
+    toolbar_layout.addWidget(_make_label(toolbar, "المخزن", palette, size=10, bold=True))
 
-    quick = QtFrame(content, fg_color=card, corner_radius=12, width=250)
-    quick.pack(side=LEFT, fill=Y, padx=(0, 8))
-    quick.pack_propagate(False)
-    QtLabel(
-        quick, text="الأصناف السريعة", font=("Arial", 18, "bold"), text_color=text
-    ).pack(pady=(10, 2))
-    quick_scroll = QtScrollableFrame(quick, fg_color="transparent")
-    quick_scroll.pack(fill=BOTH, expand=True, padx=6, pady=6)
+    warehouse_menu = _style_combo(QComboBox(toolbar), palette, 36)
+    for row in warehouses:
+        warehouse_menu.addItem(f"{int(row[0])} — {row[1]}", int(row[0]))
+    default_index = warehouse_menu.findData(int(default_warehouse[0]))
+    if default_index >= 0:
+        warehouse_menu.setCurrentIndex(default_index)
+    warehouse_menu.setMinimumWidth(190)
+    toolbar_layout.addWidget(warehouse_menu)
+    toolbar_layout.addStretch(1)
 
-    center = QtFrame(content, fg_color=card, corner_radius=12)
-    center.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 8))
+    shift_status_frame = QFrame(toolbar)
+    shift_status_frame.setStyleSheet(f"background: {palette['surface_alt']}; border-radius: 9px;")
+    shift_status_layout = QHBoxLayout(shift_status_frame)
+    shift_status_layout.setContentsMargins(10, 7, 10, 7)
+    shift_text_label = _make_label(shift_status_frame, "جاري تحميل حالة الوردية...", palette, size=9, bold=True, color=palette["muted"])
+    shift_status_layout.addWidget(shift_text_label)
+    toolbar_layout.addWidget(shift_status_frame)
+    shift_button = _make_button(toolbar, "بدء الوردية", kind="success", palette=palette, width=128, height=38)
+    toolbar_layout.addWidget(shift_button)
+    main_layout.addWidget(toolbar)
 
-    # Keep the fixed-width panel separate from its scrolling content. Applying
-    # pack_propagate(False) directly to a CTkScrollableFrame can leave its inner
-    # Scroll areas keep their own content widget, so the fixed panel is separate
-    # from its scrolling body and retains a predictable minimum width.
-    controls = QtFrame(
-        content, fg_color=card, corner_radius=12, width=320
-    )
-    # Pack the fixed right panel before the expanding center panel. Otherwise,
-    # the center panel can claim the available width first and squeeze the
-    # checkout panel out of view on some window sizes.
-    controls.pack(side=RIGHT, fill=Y, padx=(8, 0), before=center)
-    controls.pack_propagate(False)
+    # ---------------- three-column work area ----------------
+    content = QWidget(main)
+    content.setLayoutDirection(Qt.RightToLeft)
+    content_layout = QHBoxLayout(content)
+    content_layout.setContentsMargins(0, 0, 0, 0)
+    content_layout.setSpacing(8)
+    main_layout.addWidget(content, 1)
 
-    controls_body = QtScrollableFrame(
-        controls, fg_color="transparent", corner_radius=12
-    )
-    controls_body.pack(fill=BOTH, expand=True, padx=0, pady=0)
+    # Checkout panel is the right-most panel in the RTL layout.
+    controls = QFrame(content)
+    controls.setFixedWidth(330)
+    controls.setStyleSheet(f"background: {palette['surface']}; border-radius: 14px;")
+    controls_layout = QVBoxLayout(controls)
+    controls_layout.setContentsMargins(0, 0, 0, 0)
+    controls_scroll = QScrollArea(controls)
+    controls_scroll.setWidgetResizable(True)
+    controls_scroll.setFrameShape(QFrame.NoFrame)
+    controls_body = QWidget()
+    controls_body.setLayoutDirection(Qt.RightToLeft)
+    controls_body_layout = QVBoxLayout(controls_body)
+    controls_body_layout.setContentsMargins(0, 0, 0, 0)
+    controls_body_layout.setSpacing(5)
+    controls_scroll.setWidget(controls_body)
+    controls_layout.addWidget(controls_scroll)
+    content_layout.addWidget(controls)
 
-    style = QtStyle()
-    style.configure(
-        "Cashier.Treeview",
-        background=card,
-        foreground=text,
-        fieldbackground=card,
-        rowheight=32,
-        font=("Arial", 11),
-    )
-    style.configure("Cashier.Treeview.Heading", font=("Arial", 11, "bold"))
-    style.map(
-        "Cashier.Treeview",
-        background=[("selected", "#265777")],
-        foreground=[("selected", "#ffffff")],
-    )
+    center = QFrame(content)
+    center.setStyleSheet(f"background: {palette['surface']}; border-radius: 14px;")
+    center_layout = QVBoxLayout(center)
+    center_layout.setContentsMargins(12, 12, 12, 12)
+    center_layout.setSpacing(7)
+    content_layout.addWidget(center, 1)
 
-    search_frame = QtFrame(center, fg_color="transparent")
-    search_frame.pack(fill=X, padx=10, pady=10)
-    search_entry = QtLineEdit(
-        search_frame,
-        textvariable=search_var,
-        placeholder_text="امسح الباركود أو ابحث باسم المنتج / SKU",
-        font=("Arial", 14),
-        height=38,
-        justify="right",
-    )
-    search_entry.pack(side=RIGHT, fill=X, expand=True, padx=(0, 6))
-    add_button = QtButton(search_frame, text="إضافة", width=75, height=38)
-    add_button.pack(side=LEFT)
+    quick = QFrame(content)
+    quick.setFixedWidth(252)
+    quick.setStyleSheet(f"background: {palette['surface']}; border-radius: 14px;")
+    quick_layout = QVBoxLayout(quick)
+    quick_layout.setContentsMargins(10, 12, 10, 8)
+    quick_layout.setSpacing(4)
+    quick_layout.addWidget(_make_label(quick, "الأصناف السريعة", palette, size=14, bold=True))
+    quick_layout.addWidget(_make_label(quick, "اختر الصنف لإضافته إلى السلة", palette, size=9, color=palette["muted"]))
+    separator = QFrame(quick)
+    separator.setFixedHeight(1)
+    separator.setStyleSheet(f"background: {palette['border']};")
+    quick_layout.addWidget(separator)
+    quick_scroll = QScrollArea(quick)
+    quick_scroll.setWidgetResizable(True)
+    quick_scroll.setFrameShape(QFrame.NoFrame)
+    quick_content = QWidget()
+    quick_content.setLayoutDirection(Qt.RightToLeft)
+    quick_content_layout = QVBoxLayout(quick_content)
+    quick_content_layout.setContentsMargins(2, 2, 2, 2)
+    quick_content_layout.setSpacing(4)
+    quick_content_layout.setAlignment(Qt.AlignTop)
+    quick_scroll.setWidget(quick_content)
+    quick_layout.addWidget(quick_scroll, 1)
+    content_layout.addWidget(quick)
 
-    columns = ("name", "barcode", "price", "qty", "total", "stock")
-    tree = QtTreeWidget(
-        center,
-        columns=columns,
-        show="headings",
-        style="Cashier.Treeview",
-        selectmode="browse",
-        displaycolumns=columns[::-1],
-    )
-    headings = [
-        ("name", "الصنف", 180),
-        ("barcode", "الباركود", 100),
-        ("price", "سعر الوحدة", 90),
-        ("qty", "الكمية", 65),
-        ("total", "الإجمالي", 95),
-        ("stock", "المتاح", 65),
-    ]
-    for col, title, width in headings:
-        tree.heading(col, text=title)
-        tree.column(col, width=width, anchor=CENTER, stretch=(col == "name"))
-    tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 8))
+    # ---------------- center/cart panel ----------------
+    center_header = QWidget(center)
+    center_header_layout = QHBoxLayout(center_header)
+    center_header_layout.setContentsMargins(3, 0, 3, 0)
+    center_header_layout.addWidget(_make_label(center_header, "سلة المشتريات", palette, size=15, bold=True))
+    center_header_layout.addStretch(1)
+    center_header_layout.addWidget(_make_label(center_header, "أضف المنتجات وراجع الكميات قبل إتمام البيع", palette, size=9, color=palette["muted"]))
+    center_layout.addWidget(center_header)
 
-    cart_actions = QtFrame(center, fg_color="transparent")
-    cart_actions.pack(fill=X, padx=10, pady=(0, 10))
-    QtButton(
-        cart_actions,
-        text="زيادة الكمية +",
-        command=lambda: change_selected_qty(1),
-        width=115,
-    ).pack(side=RIGHT, padx=3)
-    QtButton(
-        cart_actions,
-        text="تقليل الكمية −",
-        command=lambda: change_selected_qty(-1),
-        width=115,
-    ).pack(side=RIGHT, padx=3)
-    QtButton(
-        cart_actions,
-        text="حذف الصنف",
-        command=lambda: remove_selected(),
-        width=95,
-        fg_color="#a93226",
-        hover_color="#922b21",
-    ).pack(side=LEFT, padx=3)
-    QtButton(
-        cart_actions,
-        text="تفريغ السلة",
-        command=lambda: clear_cart(),
-        width=95,
-        fg_color="#555555",
-        hover_color="#444444",
-    ).pack(side=LEFT, padx=3)
+    search_frame = QWidget(center)
+    search_layout = QHBoxLayout(search_frame)
+    search_layout.setContentsMargins(0, 0, 0, 0)
+    search_entry = _style_line_edit(QLineEdit(search_frame), palette, height=42)
+    search_entry.setPlaceholderText("امسح الباركود أو ابحث باسم المنتج / SKU")
+    search_entry.setFont(QFont("Segoe UI", 11))
+    search_layout.addWidget(search_entry, 1)
+    add_button = _make_button(search_frame, "إضافة للسلة", kind="primary", palette=palette, width=104, height=42)
+    search_layout.addWidget(add_button)
+    center_layout.addWidget(search_frame)
 
-    # ---------------- control panel ----------------
-    QtLabel(
-        controls_body,
-        text="إتمام البيع",
-        font=("Arial", 20, "bold"),
-        text_color=text,
-    ).pack(padx=12, pady=(12, 8), anchor="e")
-    QtLabel(
-        controls_body, text="العميل", text_color=text,
-        anchor="e", font=("Arial", 12, "bold"),
-    ).pack(fill=X, anchor="e", padx=12, pady=(3, 4))
-    customer_menu = QtComboBox(
-        controls_body,
-        variable=customer_var,
-        values=list(customer_labels),
-        state="readonly",
-        height=36,
-    )
-    customer_menu.pack(fill=X, padx=12, pady=(0, 2))
+    tree = QTableView(center)
+    cart_model = _CartTableModel(cart, tree)
+    tree.setModel(cart_model)
+    _configure_table_view(tree, palette, (190, 105, 95, 75, 105, 75))
+    center_layout.addWidget(tree, 1)
 
-    customer_mode_row = QtFrame(controls_body, fg_color="transparent")
-    customer_mode_row.pack(fill=X, padx=12, pady=(8, 4))
-    new_customer_check = QtCheckBox(
-        customer_mode_row,
-        text="تسجيل عميل جديد",
-        variable=new_customer_var,
-        text_color=text,
-        font=("Arial", 12, "bold"),
-        checkbox_width=20,
-        checkbox_height=20,
-    )
-    new_customer_check.pack(side=RIGHT, anchor="e")
+    cart_actions = QWidget(center)
+    cart_actions_layout = QHBoxLayout(cart_actions)
+    cart_actions_layout.setContentsMargins(0, 0, 0, 0)
+    cart_actions_layout.addWidget(_make_button(cart_actions, "زيادة الكمية +", kind="neutral", palette=palette, width=118, height=34))
+    increase_button = cart_actions_layout.itemAt(cart_actions_layout.count() - 1).widget()
+    cart_actions_layout.addWidget(_make_button(cart_actions, "تقليل الكمية −", kind="neutral", palette=palette, width=118, height=34))
+    decrease_button = cart_actions_layout.itemAt(cart_actions_layout.count() - 1).widget()
+    cart_actions_layout.addStretch(1)
+    remove_button = _make_button(cart_actions, "حذف الصنف", kind="danger", palette=palette, width=100, height=34)
+    clear_button = _make_button(cart_actions, "تفريغ السلة", kind="neutral", palette=palette, width=100, height=34)
+    cart_actions_layout.addWidget(remove_button)
+    cart_actions_layout.addWidget(clear_button)
+    center_layout.addWidget(cart_actions)
 
-    # Keep each Arabic label directly above its matching entry in one form card.
-    new_customer_frame = QtFrame(controls_body, fg_color=bg, corner_radius=10)
-    new_customer_frame.grid_columnconfigure(0, weight=1)
-    QtLabel(
-        new_customer_frame, text="اسم العميل *", text_color=text,
-        anchor="e", font=("Arial", 12, "bold"),
-    ).pack(fill=X, padx=10, pady=(10, 2))
-    new_customer_entry = QtLineEdit(
-        new_customer_frame,
-        textvariable=new_customer_name,
-        placeholder_text="اكتب اسم العميل",
-        height=35,
-        justify="right",
-    )
-    new_customer_entry.pack(fill=X, padx=10, pady=(0, 8))
-    QtLabel(
-        new_customer_frame, text="رقم الهاتف (اختياري)", text_color=text,
-        anchor="e", font=("Arial", 12, "bold"),
-    ).pack(fill=X, padx=10, pady=(0, 2))
-    new_customer_phone_entry = QtLineEdit(
-        new_customer_frame,
-        textvariable=new_customer_phone,
-        placeholder_text="اكتب رقم الهاتف",
-        height=35,
-        justify="right",
-    )
-    new_customer_phone_entry.pack(fill=X, padx=10, pady=(0, 10))
+    # ---------------- checkout controls ----------------
+    controls_body_layout.addWidget(_make_label(controls_body, "إتمام البيع", palette, size=16, bold=True))
+    controls_body_layout.addWidget(_make_label(controls_body, "العميل", palette, size=10, bold=True))
+    customer_menu = _style_combo(QComboBox(controls_body), palette)
 
-    payment_label = QtLabel(
-        controls_body, text="طريقة الدفع", text_color=text,
-        anchor="e", font=("Arial", 12, "bold"),
-    )
-    payment_label.pack(fill=X, anchor="e", padx=12, pady=(8, 4))
-    payment_menu = QtComboBox(
-        controls_body,
-        variable=method_var,
-        values=list(method_labels),
-        state="readonly",
-        height=36,
-    )
-    payment_menu.pack(fill=X, padx=12)
+    def rebuild_customer_combo(select_label: str = WALK_IN_LABEL):
+        customer_menu.clear()
+        customer_menu.addItem(WALK_IN_LABEL, None)
+        for customer_id, customer_name, phone in customers:
+            label = f"{customer_name} — {phone}" if phone else str(customer_name)
+            if label in [customer_menu.itemText(i) for i in range(customer_menu.count())]:
+                label = f"{label} (#{customer_id})"
+            customer_menu.addItem(label, int(customer_id))
+        target = customer_menu.findText(select_label)
+        customer_menu.setCurrentIndex(target if target >= 0 else 0)
 
-    QtLabel(
-        controls_body, text="المبلغ المدفوع", text_color=text,
-        anchor="e", font=("Arial", 12, "bold"),
-    ).pack(fill=X, anchor="e", padx=12, pady=(10, 4))
-    paid_entry = QtLineEdit(
-        controls_body, textvariable=paid_var, height=36, justify=CENTER
-    )
-    paid_entry.pack(fill=X, padx=12)
-    QtLabel(
-        controls_body,
-        text="بالوحدة النقدية الرئيسية؛ المبالغ تحفظ كوحدات صغرى.",
-        text_color=muted,
-        font=("Arial", 10),
-        wraplength=260,
-    ).pack(anchor="e", padx=12, pady=(3, 8))
+    rebuild_customer_combo()
+    controls_body_layout.addWidget(customer_menu)
 
-    QtLabel(
-        controls_body, text="إجمالي الفاتورة", text_color=muted, anchor="e"
-    ).pack(fill=X, anchor="e", padx=12, pady=(8, 0))
-    QtLabel(
-        controls_body,
-        textvariable=total_var,
-        font=("Arial", 26, "bold"),
-        text_color=text,
-    ).pack(anchor="e", padx=12, pady=(0, 8))
+    customer_mode_row = QWidget(controls_body)
+    customer_mode_layout = QHBoxLayout(customer_mode_row)
+    customer_mode_layout.setContentsMargins(0, 2, 0, 2)
+    new_customer_check = QCheckBox("تسجيل عميل جديد", customer_mode_row)
+    new_customer_check.setLayoutDirection(Qt.RightToLeft)
+    new_customer_check.setFont(QFont("Segoe UI", 10, QFont.Bold))
+    new_customer_check.setStyleSheet(f"color: {palette['text']};")
+    customer_mode_layout.addWidget(new_customer_check)
+    customer_mode_layout.addStretch(1)
+    controls_body_layout.addWidget(customer_mode_row)
 
+    new_customer_frame = QFrame(controls_body)
+    new_customer_frame.setStyleSheet(f"background: {palette['surface_alt']}; border-radius: 10px;")
+    new_customer_layout = QVBoxLayout(new_customer_frame)
+    new_customer_layout.setContentsMargins(11, 9, 11, 9)
+    new_customer_layout.setSpacing(4)
+    new_customer_layout.addWidget(_make_label(new_customer_frame, "اسم العميل *", palette, size=10, bold=True))
+    new_customer_name = _style_line_edit(QLineEdit(new_customer_frame), palette, height=37)
+    new_customer_name.setPlaceholderText("اكتب اسم العميل")
+    new_customer_layout.addWidget(new_customer_name)
+    new_customer_layout.addWidget(_make_label(new_customer_frame, "رقم الهاتف (اختياري)", palette, size=10, bold=True))
+    new_customer_phone = _style_line_edit(QLineEdit(new_customer_frame), palette, height=37)
+    new_customer_phone.setPlaceholderText("اكتب رقم الهاتف")
+    new_customer_layout.addWidget(new_customer_phone)
+    controls_body_layout.addWidget(new_customer_frame)
+    new_customer_frame.hide()
+
+    payment_label = _make_label(controls_body, "طريقة الدفع", palette, size=10, bold=True)
+    controls_body_layout.addWidget(payment_label)
+    payment_menu = _style_combo(QComboBox(controls_body), palette)
+    for method_label, method_id in method_labels.items():
+        payment_menu.addItem(method_label, method_id)
+    controls_body_layout.addWidget(payment_menu)
+
+    controls_body_layout.addWidget(_make_label(controls_body, "المبلغ المدفوع", palette, size=10, bold=True))
+    paid_entry = _style_line_edit(QLineEdit(controls_body), palette, height=38, align=Qt.AlignCenter)
+    paid_entry.setText("0")
+    paid_entry.setFont(QFont("Segoe UI", 12, QFont.Bold))
+    controls_body_layout.addWidget(paid_entry)
+    controls_body_layout.addWidget(_make_label(controls_body, "بالوحدة النقدية الرئيسية؛ المبالغ تحفظ كوحدات صغرى.", palette, size=9, color=palette["muted"], wrap=True))
+
+    summary_card = QFrame(controls_body)
+    summary_card.setStyleSheet(f"background: {palette['surface_alt']}; border-radius: 11px;")
+    summary_layout = QVBoxLayout(summary_card)
+    summary_layout.setContentsMargins(13, 10, 13, 10)
+    summary_layout.addWidget(_make_label(summary_card, "إجمالي الفاتورة", palette, size=10, bold=True, color=palette["muted"]))
+    total_label = _make_label(summary_card, minor_to_money(0), palette, size=23, bold=True,
+                              color="#48D6A0" if dark else palette["success"])
+    summary_layout.addWidget(total_label)
+    controls_body_layout.addWidget(summary_card)
+
+    # ---------------- cashier behavior ----------------
     def is_credit_customer() -> bool:
-        return new_customer_var.get() or customer_labels.get(customer_var.get()) is not None
+        return new_customer_check.isChecked() or customer_menu.currentData() is not None
 
     def current_warehouse_id() -> int:
-        try:
-            return warehouse_labels[warehouse_var.get()]
-        except KeyError:
-            raise ValueError("اختر مخزنًا صحيحًا") from None
+        value = warehouse_menu.currentData()
+        if value is None:
+            raise ValueError("اختر مخزنًا صحيحًا")
+        return int(value)
 
     def current_total_minor() -> int:
         total = 0
         for entry in cart.values():
-            _base, _tax, line_total = _line_totals(
-                entry["product"], entry["quantity"]
-            )
+            _base, _tax, line_total = _line_totals(entry["product"], entry["quantity"])
             total += line_total
         return total
 
-    def refresh_customer_mode(reset_payment: bool = False):
-        """Switch between walk-in (full payment) and named-customer modes."""
-        if new_customer_var.get():
-            customer_menu.configure(state="disabled")
-            new_customer_frame.pack(
-                fill=X, padx=12, pady=(0, 8), before=payment_label
+    def check_stock(product: tuple, wanted_qty: Decimal) -> None:
+        """Raise ValueError when a stock-tracked product lacks the requested quantity."""
+        try:
+            tracked = bool(product[7])
+            available = Decimal(str(product[5]))
+        except (IndexError, InvalidOperation, TypeError):
+            return
+        if tracked and wanted_qty > available:
+            raise ValueError(
+                f"الكمية المطلوبة ({_qty_text(wanted_qty)}) أكبر من "
+                f"المتاح في المخزن ({_qty_text(available)}) للصنف: {product[1]}"
             )
-        else:
-            customer_menu.configure(state="readonly")
-            new_customer_frame.pack_forget()
 
+    def refresh_customer_mode(reset_payment: bool = False):
+        if new_customer_check.isChecked():
+            customer_menu.setEnabled(False)
+            new_customer_frame.show()
+        else:
+            customer_menu.setEnabled(True)
+            new_customer_frame.hide()
         if not is_credit_customer():
-            # Walk-in sales must be paid in full.
-            paid_var.set(minor_to_money(current_total_minor()))
-        elif reset_payment or not paid_var.get().strip():
-            # A named customer may buy on credit; do not carry over the
-            # previous walk-in invoice amount as an accidental payment.
-            paid_var.set(minor_to_money(0))
+            paid_entry.setText(minor_to_money(current_total_minor()))
+        elif reset_payment or not paid_entry.text().strip():
+            paid_entry.setText(minor_to_money(0))
 
     def repaint_cart():
-        tree.delete(*tree.get_children())
-        for pid, entry in cart.items():
-            product = entry["product"]
-            qty = entry["quantity"]
-            _base, _tax, line_total = _line_totals(product, qty)
-            stock_text = f"{float(product[5]):g}" if product[7] else "—"
-            tree.insert(
-                "",
-                END,
-                iid=str(pid),
-                values=(
-                    product[1],
-                    product[3],
-                    minor_to_money(product[4]),
-                    _qty_text(qty),
-                    minor_to_money(line_total),
-                    stock_text,
-                ),
-            )
+        selected_pid = selected_product_id()
+        cart_model.refresh()
         total = current_total_minor()
-        total_var.set(minor_to_money(total))
+        total_label.setText(minor_to_money(total))
         if not is_credit_customer():
-            paid_var.set(minor_to_money(total))
-        elif not paid_var.get().strip():
-            paid_var.set(minor_to_money(0))
+            paid_entry.setText(minor_to_money(total))
+        elif not paid_entry.text().strip():
+            paid_entry.setText(minor_to_money(0))
+        if selected_pid is not None:
+            row_index = cart_model.row_for_product(selected_pid)
+            if row_index >= 0:
+                index = cart_model.index(row_index, 0)
+                tree.setCurrentIndex(index)
+                tree.selectRow(row_index)
 
-    def ask_product_quantity(product, on_confirm=None):
-        """Ask for a product quantity before adding it to the cart."""
-        dialog = QtDialog(top)
-        dialog.title("تحديد الكمية")
-        dialog.geometry("360x220")
-        dialog.resizable(False, False)
-        dialog.transient(top)
-        dialog.grab_set()
+    def selected_product_id() -> int | None:
+        index = tree.currentIndex()
+        if not index.isValid():
+            return None
+        product_id = cart_model.product_id_at(index.row())
+        return product_id if product_id in cart else None
 
-        product_name = str(product[1])
-        QtLabel(
-            dialog,
-            text=f"المنتج: {product_name}",
-            font=("Arial", 14, "bold"),
-            anchor="e",
-            justify="right",
-            wraplength=320,
-        ).pack(fill=X, padx=16, pady=(18, 8))
-
-        QtLabel(
-            dialog,
-            text="أدخل الكمية المطلوبة:",
-            font=("Arial", 13),
-            anchor="e",
-            justify="right",
-        ).pack(fill=X, padx=16, pady=(0, 5))
-
-        quantity_var = StringVar(value="1")
-        quantity_entry = QtLineEdit(
-            dialog,
-            textvariable=quantity_var,
-            justify="center",
-            height=38,
-        )
-        quantity_entry.pack(fill=X, padx=16, pady=4)
-
-        buttons = QtFrame(dialog, fg_color="transparent")
-        buttons.pack(fill=X, padx=16, pady=(12, 14))
+    def ask_product_quantity(product: tuple, on_confirm: Callable | None = None):
+        dialog = _new_dialog(top, "تحديد الكمية", palette, (360, 220))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.addWidget(_make_label(dialog, f"المنتج: {product[1]}", palette, size=13, bold=True, wrap=True))
+        layout.addWidget(_make_label(dialog, "أدخل الكمية المطلوبة:", palette, size=12))
+        quantity_entry = _style_line_edit(QLineEdit(dialog), palette, height=38, align=Qt.AlignCenter)
+        quantity_entry.setText("1")
+        layout.addWidget(quantity_entry)
+        buttons = QHBoxLayout()
+        add_to_cart_button = _make_button(dialog, "إضافة للسلة", kind="primary", palette=palette)
+        cancel_button = _make_button(dialog, "إلغاء", kind="neutral", palette=palette)
+        buttons.addWidget(add_to_cart_button)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
 
         def confirm_quantity():
             try:
-                qty = _quantity(quantity_var.get())
+                quantity = _quantity(quantity_entry.text())
             except ValueError as exc:
-                dialogs.showerror(
-                    "كمية غير صحيحة",
-                    str(exc),
-                    parent=dialog,
-                )
-                quantity_entry.focus_set()
+                _message("error", "كمية غير صحيحة", str(exc), dialog)
+                quantity_entry.setFocus()
                 return
-
-            quantity_text = _qty_text(qty)
-
-            dialog.grab_release()
-            dialog.destroy()
-
+            dialog.accept()
             if on_confirm is not None:
-                on_confirm(product, quantity_text)
+                on_confirm(product, _qty_text(quantity))
             else:
-                add_product_to_cart(product, quantity_text)
+                add_product_to_cart(product, _qty_text(quantity))
 
-        QtButton(
-            buttons, text="إضافة للسلة", command=confirm_quantity
-        ).pack(side=RIGHT, padx=(4, 0))
-        QtButton(
-            buttons, text="إلغاء", fg_color="#555555",
-            hover_color="#444444", command=dialog.destroy
-        ).pack(side=LEFT, padx=(0, 4))
+        add_to_cart_button.clicked.connect(confirm_quantity)
+        cancel_button.clicked.connect(dialog.reject)
+        quantity_entry.returnPressed.connect(confirm_quantity)
+        dialog.exec()
 
-        quantity_entry.bind("<Return>", lambda _event: confirm_quantity())
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        dialog.after(100, quantity_entry.focus_set)
-
-    def add_product_to_cart(product, raw_qty="1"):
+    def add_product_to_cart(product: tuple, raw_qty: Any = "1"):
         try:
-            qty = _quantity(raw_qty)
+            quantity = _quantity(raw_qty)
+            product_id = int(product[0])
+            existing = cart[product_id]["quantity"] if product_id in cart else Decimal(0)
+            check_stock(product, existing + quantity)
         except ValueError as exc:
-            dialogs.showerror(
-                "كمية غير صحيحة", str(exc), parent=top
-            )
+            _message("error", "تعذر الإضافة", str(exc), top)
             return
-        pid = int(product[0])
-        if pid in cart:
-            cart[pid]["quantity"] += qty
-            # Refresh product data when an item is added from search or quick access.
-            cart[pid]["product"] = product
+        if product_id in cart:
+            cart[product_id]["quantity"] += quantity
+            cart[product_id]["product"] = product
         else:
-            cart[pid] = {"product": product, "quantity": qty}
+            cart[product_id] = {"product": product, "quantity": quantity}
         repaint_cart()
-        search_var.set("")
-        search_entry.focus_set()
+        search_entry.clear()
+        search_entry.setFocus()
 
-    def choose_product(products, raw_qty=None):
+    def choose_product(products: list[tuple]):
         if len(products) == 1:
             ask_product_quantity(products[0])
             return
-        picker = QtDialog(parent)
-        picker.title("اختر الصنف")
-        picker.geometry("560x400")
-        picker.transient(top)
-        picker.grab_set()
-        QtLabel(
-            picker, text=f"نتائج البحث: {len(products)}", font=("Arial", 16, "bold")
-        ).pack(pady=8)
-        scroller = QtScrollableFrame(picker)
-        scroller.pack(fill=BOTH, expand=True, padx=10, pady=10)
-        def select_from_picker(product):
-            picker.destroy()
-            ask_product_quantity(product)
-
+        picker = _new_dialog(top, "اختر الصنف", palette, (560, 400))
+        layout = QVBoxLayout(picker)
+        layout.addWidget(_make_label(picker, f"نتائج البحث: {len(products)}", palette, size=15, bold=True))
+        scroll = QScrollArea(picker)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setAlignment(Qt.AlignTop)
         for product in products:
             label = (
                 f"{product[1]} | {product[3] or product[2] or '-'} | "
                 f"{minor_to_money(product[4])} | مخزون {float(product[5]):g}"
             )
-            QtButton(
-                scroller,
-                text=label,
-                anchor="e",
-                command=lambda p=product: select_from_picker(p),
-            ).pack(fill=X, pady=3)
+            button = _make_button(body, label, kind="neutral", palette=palette, height=40)
+            button.setStyleSheet(button.styleSheet() + " QPushButton { text-align: right; }")
+            button.clicked.connect(lambda _checked=False, p=product: select_from_picker(p))
+            body_layout.addWidget(button)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
 
-    def search_and_add(event=None):
-        value = search_var.get().strip()
+        def select_from_picker(product):
+            picker.accept()
+            ask_product_quantity(product)
+
+        picker.exec()
+
+    def search_and_add():
+        value = search_entry.text().strip()
         if not value:
-            return "break"
+            return
         try:
             products = get_cashier_products(value, current_warehouse_id())
         except Exception as exc:
-            dialogs.showerror("خطأ", str(exc), parent=top)
-            return "break"
-        if not products:
-            dialogs.showwarning(
-                "غير موجود",
-                "لم يتم العثور على منتج نشط بهذا الاسم أو الباركود أو SKU.",
-                parent=top,
-            )
-            return "break"
-        try:
-            raw_qty = qty_var.get().strip() or "1"
-            _quantity(raw_qty)
-        except ValueError as exc:
-            dialogs.showerror("كمية غير صحيحة", str(exc), parent=top)
-            return "break"
-        # Prefer exact SKU/barcode matches. Partial-name matches need a picker.
-        exact = [
-            product
-            for product in products
-            if value == str(product[3] or "") or value == str(product[2] or "")
-        ]
-        choose_product(exact[:1] if exact else products, raw_qty)
-        qty_var.set("1")
-        return "break"
-
-    def selected_product_id():
-        selected = tree.selection()
-        if not selected:
-            selected = (tree.focus(),) if tree.focus() else ()
-        if not selected:
-            return None
-        try:
-            pid = int(selected[0])
-        except (TypeError, ValueError):
-            return None
-        return pid if pid in cart else None
-
-    def change_selected_qty(delta):
-        pid = selected_product_id()
-        if pid is None:
+            _message("error", "خطأ", str(exc), top)
             return
-        new_qty = cart[pid]["quantity"] + Decimal(delta)
-        if new_qty <= 0:
-            cart.pop(pid, None)
+        if not products:
+            _message("warning", "غير موجود", "لم يتم العثور على منتج نشط بهذا الاسم أو الباركود أو SKU.", top)
+            return
+        exact = [product for product in products if value == str(product[3] or "") or value == str(product[2] or "")]
+        choose_product(exact[:1] if exact else products)
+
+    def change_selected_qty(delta: int):
+        product_id = selected_product_id()
+        if product_id is None:
+            return
+        new_quantity = cart[product_id]["quantity"] + Decimal(delta)
+        if new_quantity <= 0:
+            cart.pop(product_id, None)
         else:
-            cart[pid]["quantity"] = new_qty
+            if delta > 0:
+                try:
+                    check_stock(cart[product_id]["product"], new_quantity)
+                except ValueError as exc:
+                    _message("error", "تعذر زيادة الكمية", str(exc), top)
+                    return
+            cart[product_id]["quantity"] = new_quantity
         repaint_cart()
-        if str(pid) in tree.get_children():
-            tree.selection_set(str(pid))
-            tree.focus(str(pid))
 
     def remove_selected():
-        pid = selected_product_id()
-        if pid is not None:
-            cart.pop(pid, None)
+        product_id = selected_product_id()
+        if product_id is not None:
+            cart.pop(product_id, None)
             repaint_cart()
 
     def clear_cart():
@@ -706,254 +928,178 @@ def build_sell_ui(parent, username):
         repaint_cart()
 
     def customer_id_from_form():
-        if new_customer_var.get():
-            name = new_customer_name.get().strip()
+        if new_customer_check.isChecked():
+            name = new_customer_name.text().strip()
             if not name:
                 raise ValueError("أدخل اسم العميل الجديد")
-            return None, name, new_customer_phone.get().strip() or None
-        selected = customer_var.get()
-        if selected not in customer_labels:
+            return None, name, new_customer_phone.text().strip() or None
+        selected_id = customer_menu.currentData()
+        if customer_menu.currentIndex() < 0:
             raise ValueError("اختر عميلًا صحيحًا")
-        return customer_labels[selected], None, None
+        return (int(selected_id) if selected_id is not None else None), None, None
 
     def refresh_customers():
         nonlocal customers, customer_labels
         try:
             fresh = get_cashier_context(cashier_id)
             customers = list(fresh["customers"])
-            old = customer_var.get()
+            old_label = customer_menu.currentText()
             customer_labels = {WALK_IN_LABEL: None}
-            for cid, cname, phone in customers:
-                label = f"{cname} — {phone}" if phone else str(cname)
+            for customer_id, customer_name, phone in customers:
+                label = f"{customer_name} — {phone}" if phone else str(customer_name)
                 if label in customer_labels:
-                    label = f"{label} (#{cid})"
-                customer_labels[label] = int(cid)
-            customer_menu.configure(values=list(customer_labels))
-            customer_var.set(old if old in customer_labels else WALK_IN_LABEL)
+                    label = f"{label} (#{customer_id})"
+                customer_labels[label] = int(customer_id)
+            rebuild_customer_combo(old_label)
             refresh_customer_mode()
         except Exception as exc:
-            dialogs.showerror("خطأ", str(exc), parent=top)
+            _message("error", "خطأ", str(exc), top)
 
-    
-    quick_access_state = {
-        "warehouse_id": None,
-        "built": False,
-    }
-
+    quick_access_state = {"warehouse_id": None, "built": False}
 
     def build_quick_access(force: bool = False):
         warehouse_id = current_warehouse_id()
-
-        # Avoid destroying and recreating hundreds of widgets unnecessarily.
-        # Changing warehouses automatically triggers a rebuild.
-        if (
-            not force
-            and quick_access_state["built"]
-            and quick_access_state["warehouse_id"] == warehouse_id
-        ):
+        if (not force and quick_access_state["built"] and quick_access_state["warehouse_id"] == warehouse_id):
             return
-
-        for child in quick_scroll.winfo_children():
-            child.destroy()
-
+        _clear_layout(quick_content_layout)
         try:
             groups, ungrouped = get_cashier_product_groups(warehouse_id)
+            groups = list(groups)
         except Exception as exc:
+            message = _make_label(quick_content, f"تعذر تحميل الأصناف:\n{exc}", palette, size=9, color=palette["danger"], wrap=True)
+            quick_content_layout.addWidget(message)
             quick_access_state["built"] = False
-            QtLabel(
-                quick_scroll,
-                text=f"تعذر تحميل الأصناف:\n{exc}",
-                text_color="#e74c3c",
-                wraplength=220,
-                font=("Arial", 10),
-            ).pack(padx=6, pady=8)
             return
-
         if ungrouped:
             groups.append(("بدون قسم", ungrouped))
 
-        paper_labels = {
-            "normal": "عادي",
-            "glossy": "لامع",
-            "sticker": "استيكر",
-            "double glossy": "لامع مزدوج",
-        }
-        color_labels = {
-            "colorful": "ألوان",
-            "black and white": "أبيض/أسود",
-        }
+        paper_labels = {"normal": "عادي", "glossy": "لامع", "sticker": "استيكر", "double glossy": "لامع مزدوج"}
+        color_labels = {"colorful": "ألوان", "black and white": "أبيض/أسود"}
 
         def compact_product_label(product):
             full_name = str(product[1] or "")
             path = str(product[12] or "") if len(product) > 12 else ""
             parts = [part.strip() for part in path.split(" / ") if part.strip()]
-
-            # The seed format is:
-            # "category | paper size - face - color"
-            details = (
-                full_name.split("|", 1)[1].strip()
-                if "|" in full_name
-                else full_name
-            )
-
+            details = full_name.split("|", 1)[1].strip() if "|" in full_name else full_name
             if len(parts) >= 2:
                 details = details.replace(f" {parts[1]}", "", 1)
-
             if len(parts) >= 3:
                 details = details.replace(f" - {parts[2]}", "", 1)
-
             if len(parts) >= 4:
                 details = details.removesuffix(f" - {parts[3]}")
-
             paper = " ".join(details.strip(" -").split())
             paper_label = paper_labels.get(paper.casefold(), paper or "منتج")
-
             mode = parts[3].casefold() if len(parts) >= 4 else ""
             mode_label = color_labels.get(mode, mode)
+            return f"{paper_label} · {mode_label}" if mode_label else paper_label
 
-            if mode_label:
-                return f"{paper_label} · {mode_label}"
-
-            return paper_label
-
-        for group_index, (section_name, products) in enumerate(groups):
-            group_frame = QtFrame(
-                quick_scroll,
-                fg_color="transparent",
-                corner_radius=8,
-            )
-            group_frame.pack(fill=X, padx=3, pady=(4, 2))
-
-            QtLabel(
-                group_frame,
-                text=section_name,
-                text_color=text,
-                font=("Arial", 11, "bold"),
-                anchor="e",
-            ).pack(fill=X, padx=4, pady=(5, 3))
-
-            products_frame = QtFrame(
-                group_frame,
-                fg_color="transparent",
-            )
-            products_frame.pack(fill=X, padx=1, pady=(0, 4))
-
-            products_frame.grid_columnconfigure(0, weight=1)
-            products_frame.grid_columnconfigure(1, weight=1)
-
+        for section_name, products in groups:
+            group_frame = QWidget(quick_content)
+            group_layout = QVBoxLayout(group_frame)
+            group_layout.setContentsMargins(1, 3, 1, 2)
+            group_layout.setSpacing(3)
+            group_layout.addWidget(_make_label(group_frame, section_name, palette, size=10, bold=True))
+            products_frame = QWidget(group_frame)
+            products_grid = QGridLayout(products_frame)
+            products_grid.setContentsMargins(0, 0, 0, 0)
+            products_grid.setHorizontalSpacing(4)
+            products_grid.setVerticalSpacing(4)
             for index, product in enumerate(products):
-                button_text = (
-                    f"{compact_product_label(product)}\n"
-                    f"{minor_to_money(product[4])}"
-                )
-
+                button_text = f"{compact_product_label(product)}\n{minor_to_money(product[4])}"
                 color = _valid_hex(product[11]) if len(product) > 11 else None
-
-                button = QtButton(
-                    products_frame,
-                    text=button_text,
-                    font=("Arial", 10),
-                    height=44,
-                    corner_radius=7,
-                    anchor="center",
-                    fg_color=color or "#1f3b4d",
-                    hover_color=_shade(color, 0.85) if color else "#2c526a",
-                    text_color=_text_on(color) if color else "#ffffff",
-                    command=lambda p=product: ask_product_quantity(p),
+                foreground = color or "#1f3b4d"
+                hover = _shade(color, 0.85) if color else "#2c526a"
+                button = QPushButton(button_text, products_frame)
+                button.setCursor(Qt.PointingHandCursor)
+                button.setMinimumHeight(46)
+                button.setFont(QFont("Segoe UI", 9))
+                button.setStyleSheet(
+                    f"QPushButton {{ background: {foreground}; color: {_text_on(foreground)}; "
+                    f"border: 0; border-radius: 7px; padding: 4px; }}"
+                    f"QPushButton:hover {{ background: {hover}; }}"
                 )
-
-                button.grid(
-                    row=index // 2,
-                    column=index % 2,
-                    sticky="ew",
-                    padx=2,
-                    pady=2,
-                )
+                button.clicked.connect(lambda _checked=False, p=product: ask_product_quantity(p))
+                products_grid.addWidget(button, index // 2, index % 2)
+            products_grid.setColumnStretch(0, 1)
+            products_grid.setColumnStretch(1, 1)
+            group_layout.addWidget(products_frame)
+            quick_content_layout.addWidget(group_frame)
 
         if not groups:
-            QtLabel(
-                quick_scroll,
-                text="لا توجد منتجات نشطة",
-                text_color=muted,
-                font=("Arial", 10),
-            ).pack(pady=12)
-
+            quick_content_layout.addWidget(_make_label(quick_content, "لا توجد منتجات نشطة", palette, size=9, color=palette["muted"]))
+        quick_content_layout.addStretch(1)
         quick_access_state["warehouse_id"] = warehouse_id
         quick_access_state["built"] = True
 
+    # Connect the signal exactly once. Updating a Python callback avoids calling
+    # clicked.disconnect() without a receiver, which produces PySide warnings.
+    shift_action: dict[str, Callable | None] = {"callback": None}
+    shift_button.clicked.connect(
+        lambda _checked=False: (
+            shift_action["callback"]()
+            if callable(shift_action["callback"])
+            else None
+        )
+    )
 
-    def refresh_shift_ui():
+    def set_shift_button(text: str, kind: str, callback: Callable):
+        color_keys = {
+            "success": (palette["success"], palette["success_hover"]),
+            "danger": (palette["danger"], palette["danger_hover"]),
+        }
+        foreground, hover = color_keys[kind]
+        shift_action["callback"] = callback
+        shift_button.setText(text)
+        shift_button.setStyleSheet(
+            f"QPushButton {{ background: {foreground}; color: #fff; border: 0; border-radius: 8px; padding: 5px 10px; font-weight: 700; }}"
+            f"QPushButton:hover {{ background: {hover}; }}"
+        )
+
+    def refresh_shift_ui() -> bool:
         try:
             row = get_open_shift(cashier_id)
         except Exception as exc:
             current_shift["row"] = None
-            shift_text_var.set("تعذر تحميل حالة الوردية")
-            shift_button.configure(state="disabled")
-            dialogs.showerror(
-                "خطأ قاعدة البيانات",
-                f"تعذر تحميل حالة الوردية:\n{exc}",
-                parent=top,
-            )
+            shift_text_label.setText("تعذر تحميل حالة الوردية")
+            shift_button.setEnabled(False)
+            _message("error", "خطأ قاعدة البيانات", f"تعذر تحميل حالة الوردية:\n{exc}", top)
             return False
-
         current_shift["row"] = row
-        shift_button.configure(state="normal")
+        shift_button.setEnabled(True)
         if row:
             current_shift["last_id"] = int(row[0])
-            shift_text_var.set(f"الوردية #{row[0]} مفتوحة منذ {row[2]}")
-            shift_button.configure(
-                text="إغلاق الوردية",
-                command=ask_close_shift,
-                fg_color="#a93226",
-                hover_color="#922b21",
-            )
+            shift_text_label.setText(f"الوردية #{row[0]} مفتوحة منذ {row[2]}")
+            set_shift_button("إغلاق الوردية", "danger", ask_close_shift)
         else:
-            shift_text_var.set("لا توجد وردية مفتوحة")
-            shift_button.configure(
-                text="بدء الوردية",
-                command=ask_open_shift,
-                fg_color="#1f7a4d",
-                hover_color="#17613d",
-            )
+            shift_text_label.setText("لا توجد وردية مفتوحة")
+            set_shift_button("بدء الوردية", "success", ask_open_shift)
         return True
 
     def confirm_sale():
         if not cart:
-            dialogs.showwarning(
-                "السلة فارغة", "أضف صنفًا واحدًا على الأقل.", parent=top
-            )
+            _message("warning", "السلة فارغة", "أضف صنفًا واحدًا على الأقل.", top)
             return
-
         shift_row = current_shift["row"]
         if not shift_row:
-            dialogs.showwarning(
-                "لا توجد وردية مفتوحة",
-                "ابدأ وردية الكاشير قبل إتمام البيع.",
-                parent=top,
-            )
+            _message("warning", "لا توجد وردية مفتوحة", "ابدأ وردية الكاشير قبل إتمام البيع.", top)
             return
-
         try:
             selected_customer, new_name, new_phone = customer_id_from_form()
             total_minor = current_total_minor()
-            # Always parse the field. The previous implementation silently replaced
-            # the entered amount with the total for walk-in customers.
-            paid_minor = money_to_minor(paid_var.get() or "0")
+            paid_minor = money_to_minor(paid_entry.text() or "0")
             if paid_minor > total_minor:
                 raise ValueError("المبلغ المدفوع أكبر من إجمالي الفاتورة")
             if selected_customer is None and not new_name and paid_minor != total_minor:
                 raise ValueError("يجب دفع فاتورة العميل النقدي بالكامل")
-            if not method_var.get() or method_var.get() not in method_labels:
+            method_id = payment_menu.currentData()
+            if method_id is None:
                 raise ValueError("اختر طريقة دفع")
 
             sale = create_cashier_sale(
-                items=[
-                    {"product_id": pid, "quantity": str(entry["quantity"])}
-                    for pid, entry in cart.items()
-                ],
+                items=[{"product_id": product_id, "quantity": str(entry["quantity"])} for product_id, entry in cart.items()],
                 cashier_id=cashier_id,
                 warehouse_id=current_warehouse_id(),
-                payment_method_id=method_labels[method_var.get()],
+                payment_method_id=int(method_id),
                 amount_paid_minor=paid_minor,
                 customer_id=selected_customer,
                 new_customer_name=new_name,
@@ -961,18 +1107,14 @@ def build_sell_ui(parent, username):
                 shift_id=int(shift_row[0]),
             )
         except Exception as exc:
-            dialogs.showerror("تعذر إتمام البيع", str(exc), parent=top)
+            _message("error", "تعذر إتمام البيع", str(exc), top)
             return
 
         export_path = None
         export_error = None
         try:
-            export_path = export_cashier_sale_to_excel(
-                int(sale["sale_id"]), shift_id=int(shift_row[0])
-            )
+            export_path = export_cashier_sale_to_excel(int(sale["sale_id"]), shift_id=int(shift_row[0]))
         except Exception as exc:
-            # The sale is already committed. Do not report checkout as failed merely
-            # because Excel/file-system export failed; show a separate warning.
             export_error = f"{type(exc).__name__}: {exc}"
 
         message = (
@@ -986,61 +1128,52 @@ def build_sell_ui(parent, username):
             message += f"\n\nتم تحديث سجل المبيعات في ملف Excel الموحد:\n{export_path}"
         elif export_error:
             message += f"\n\nتعذر إنشاء تقرير Excel، لكن الفاتورة محفوظة بالفعل:\n{export_error}"
-        dialogs.showinfo("تم البيع", message, parent=top)
+        _message("info", "تم البيع", message, top)
         cart.clear()
-        paid_var.set(minor_to_money(0))
-        new_customer_var.set(False)
-        new_customer_name.set("")
-        new_customer_phone.set("")
-        customer_var.set(WALK_IN_LABEL)
+        paid_entry.setText(minor_to_money(0))
+        new_customer_check.setChecked(False)
+        new_customer_name.clear()
+        new_customer_phone.clear()
+        customer_menu.setCurrentIndex(0)
         refresh_customer_mode()
         refresh_customers()
         repaint_cart()
-        build_quick_access()
-        search_entry.focus_set()
+        build_quick_access(force=True)
+        search_entry.setFocus()
 
-    def amount_dialog(title, prompt, callback, default="0"):
-        dialog = QtDialog(parent)
-        dialog.title(title)
-        dialog.geometry("340x190")
-        dialog.transient(top)
-        dialog.grab_set()
-        QtLabel(dialog, text=prompt, font=("Arial", 14)).pack(
-            padx=14, pady=(18, 8)
-        )
-        var = StringVar(value=default)
-        entry = QtLineEdit(dialog, textvariable=var, justify=CENTER)
-        entry.pack(fill=X, padx=18, pady=6)
-        entry.focus_set()
+    def amount_dialog(title: str, prompt: str, callback: Callable[[int], Any], default: str = "0"):
+        dialog = _new_dialog(top, title, palette, (360, 190))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.addWidget(_make_label(dialog, prompt, palette, size=12, bold=True, wrap=True))
+        amount_entry = _style_line_edit(QLineEdit(dialog), palette, height=36, align=Qt.AlignCenter)
+        amount_entry.setText(default)
+        layout.addWidget(amount_entry)
+        confirm_button = _make_button(dialog, "تأكيد", kind="primary", palette=palette)
+        layout.addWidget(confirm_button, 0, Qt.AlignHCenter)
 
         def submit():
             try:
-                amount = money_to_minor(var.get())
+                amount = money_to_minor(amount_entry.text())
                 callback(amount)
-                dialog.destroy()
+                dialog.accept()
             except Exception as exc:
-                dialogs.showerror("خطأ", str(exc), parent=dialog)
+                _message("error", "خطأ", str(exc), dialog)
 
-        QtButton(dialog, text="تأكيد", command=submit).pack(pady=12)
-        entry.bind("<Return>", lambda _event: submit())
+        confirm_button.clicked.connect(submit)
+        amount_entry.returnPressed.connect(submit)
+        dialog.exec()
 
     def ask_open_shift():
-        def open_it(amount):
+        def open_it(amount: int):
             try:
                 shift_id = open_cashier_shift(cashier_id, amount)
                 current_shift["last_id"] = int(shift_id)
                 refresh_shift_ui()
-                dialogs.showinfo(
-                    "الوردية", "بدأت الوردية بنجاح وتم تجهيز مجلد تقاريرها.", parent=top
-                )
+                _message("info", "الوردية", "بدأت الوردية بنجاح وتم تجهيز مجلد تقاريرها.", top)
             except Exception as exc:
-                # Re-read the DB in case the shift row was committed before a
-                # file-system error happened while preparing its report directory.
                 refresh_shift_ui()
-                dialogs.showerror(
-                    "تعذر بدء الوردية", f"{type(exc).__name__}: {exc}", parent=top
-                )
-
+                _message("error", "تعذر بدء الوردية", f"{type(exc).__name__}: {exc}", top)
         amount_dialog("بدء الوردية", "رصيد النقدية عند بداية الوردية", open_it)
 
     def ask_close_shift():
@@ -1049,150 +1182,103 @@ def build_sell_ui(parent, username):
             refresh_shift_ui()
             return
 
-        def close_it(amount):
+        def close_it(amount: int):
             expected = close_cashier_shift(int(row[0]), amount, cashier_id)
             refresh_shift_ui()
-            dialogs.showinfo(
-                "إغلاق الوردية",
+            _message(
+                "info", "إغلاق الوردية",
                 f"تم إغلاق الوردية.\n"
                 f"النقدية المتوقعة: {minor_to_money(expected)}\n"
                 f"النقدية الفعلية: {minor_to_money(amount)}\n"
                 f"الفرق: {minor_to_money(amount - expected)}",
-                parent=top,
+                top,
             )
-
         amount_dialog("إغلاق الوردية", "أدخل النقدية الفعلية في الدرج", close_it)
 
     def open_return_dialog():
-        dialog = QtDialog(parent)
-        dialog.title("مرتجع بيع")
-        dialog.geometry("520x390")
-        dialog.transient(top)
-        dialog.grab_set()
-        sale_ref_var = StringVar()
-        item_var = StringVar()
-        return_qty_var = StringVar(value="1")
-        resolved = {
-            "sale_id": None,
-            "items": [],
-            "labels": {},
-            "identifier": None,
-        }
-        QtLabel(
-            dialog, text="رقم العملية/الفاتورة (من سجل المبيعات) أو معرف البيع", font=("Arial", 13)
-        ).pack(anchor="e", padx=15, pady=(15, 3))
-        ref_entry = QtLineEdit(dialog, textvariable=sale_ref_var)
-        ref_entry.pack(fill=X, padx=15)
-        item_menu = QtComboBox(
-            dialog, variable=item_var, values=[], state="readonly"
-        )
-        QtLabel(
-            dialog, text="المنتج القابل للإرجاع", font=("Arial", 13)
-        ).pack(anchor="e", padx=15, pady=(12, 3))
-        item_menu.pack(fill=X, padx=15)
-        QtLabel(
-            dialog, text="الكمية المراد إرجاعها", font=("Arial", 13)
-        ).pack(anchor="e", padx=15, pady=(12, 3))
-        QtLineEdit(dialog, textvariable=return_qty_var).pack(fill=X, padx=15)
+        dialog = _new_dialog(top, "مرتجع بيع", palette, (520, 390))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(15, 13, 15, 13)
+        layout.setSpacing(6)
+        layout.addWidget(_make_label(dialog, "رقم العملية/الفاتورة (من سجل المبيعات) أو معرف البيع", palette, size=11))
+        sale_ref_entry = _style_line_edit(QLineEdit(dialog), palette)
+        layout.addWidget(sale_ref_entry)
+        layout.addWidget(_make_label(dialog, "المنتج القابل للإرجاع", palette, size=11))
+        item_menu = _style_combo(QComboBox(dialog), palette)
+        layout.addWidget(item_menu)
+        layout.addWidget(_make_label(dialog, "الكمية المراد إرجاعها", palette, size=11))
+        return_quantity_entry = _style_line_edit(QLineEdit(dialog), palette)
+        return_quantity_entry.setText("1")
+        layout.addWidget(return_quantity_entry)
+        resolved: dict[str, Any] = {"sale_id": None, "items": [], "labels": {}, "identifier": None}
 
-        def load_return_items(show_message=True):
-            identifier = sale_ref_var.get().strip()
+        def load_return_items(show_message: bool = True):
+            identifier = sale_ref_entry.text().strip()
             if not identifier:
-                dialogs.showerror(
-                    "تعذر تحميل الفاتورة", "أدخل رقم الفاتورة أو معرفها.", parent=dialog
-                )
+                _message("error", "تعذر تحميل الفاتورة", "أدخل رقم الفاتورة أو معرفها.", dialog)
                 return False
             try:
                 sale_id, sale_number, rows = get_returnable_sales_items(identifier)
                 if not rows:
-                    raise ValueError(
-                        "لا توجد كميات متبقية قابلة للإرجاع لهذه الفاتورة"
-                    )
+                    raise ValueError("لا توجد كميات متبقية قابلة للإرجاع لهذه الفاتورة")
                 labels = {}
+                item_menu.clear()
                 for row in rows:
-                    pid, name, remaining, _price, _cost = row
-                    label = f"{name} — متبقي {remaining:g} (ID {pid})"
+                    product_id, name, remaining, _price, _cost = row
+                    label = f"{name} — متبقي {remaining:g} (ID {product_id})"
                     labels[label] = row
-                resolved["sale_id"] = int(sale_id)
-                resolved["items"] = rows
-                resolved["labels"] = labels
-                resolved["identifier"] = identifier
-                item_menu.configure(values=list(labels))
-                item_var.set(next(iter(labels)))
+                    item_menu.addItem(label, row)
+                resolved.update({"sale_id": int(sale_id), "items": rows, "labels": labels, "identifier": identifier})
                 if show_message:
-                    dialogs.showinfo(
-                        "الفاتورة",
-                        f"الفاتورة {sale_number} جاهزة للمرتجع.",
-                        parent=dialog,
-                    )
+                    _message("info", "الفاتورة", f"الفاتورة {sale_number} جاهزة للمرتجع.", dialog)
                 return True
             except Exception as exc:
-                resolved.update(
-                    {"sale_id": None, "items": [], "labels": {}, "identifier": None}
-                )
-                item_menu.configure(values=[])
-                item_var.set("")
-                dialogs.showerror(
-                    "تعذر تحميل الفاتورة", str(exc), parent=dialog
-                )
+                resolved.update({"sale_id": None, "items": [], "labels": {}, "identifier": None})
+                item_menu.clear()
+                _message("error", "تعذر تحميل الفاتورة", str(exc), dialog)
                 return False
 
         def submit_return():
             try:
-                identifier = sale_ref_var.get().strip()
-                if (
-                    resolved["sale_id"] is None
-                    or resolved["identifier"] != identifier
-                ):
+                identifier = sale_ref_entry.text().strip()
+                if resolved["sale_id"] is None or resolved["identifier"] != identifier:
                     if not load_return_items(show_message=False):
                         return
-                row = resolved["labels"].get(item_var.get())
+                row = item_menu.currentData()
                 if not row:
                     raise ValueError("اختر منتجًا صالحًا")
-                qty = _quantity(return_qty_var.get())
-                if qty > Decimal(str(row[2])):
+                quantity = _quantity(return_quantity_entry.text())
+                if quantity > Decimal(str(row[2])):
                     raise ValueError(f"الكمية المتبقية هي {row[2]:g} فقط")
                 shift = current_shift["row"]
                 if not shift:
                     raise ValueError("ابدأ وردية الكاشير قبل تسجيل المرتجع")
                 return_id = create_cashier_return(
-                    int(resolved["sale_id"]),
-                    int(row[0]),
-                    float(qty),
-                    cashier_id,
-                    int(shift[0]),
-                    "مرتجع من صفحة الكاشير",
+                    int(resolved["sale_id"]), int(row[0]), float(quantity), cashier_id,
+                    int(shift[0]), "مرتجع من صفحة الكاشير",
                 )
-                dialog.destroy()
-                build_quick_access()
-                dialogs.showinfo(
-                    "تم المرتجع",
-                    f"تم إنشاء المرتجع بنجاح. معرف المرتجع: {return_id}",
-                    parent=top,
-                )
+                dialog.accept()
+                build_quick_access(force=True)
+                _message("info", "تم المرتجع", f"تم إنشاء المرتجع بنجاح. معرف المرتجع: {return_id}", top)
             except Exception as exc:
-                dialogs.showerror("تعذر تنفيذ المرتجع", str(exc), parent=dialog)
+                _message("error", "تعذر تنفيذ المرتجع", str(exc), dialog)
 
-        buttons = QtFrame(dialog, fg_color="transparent")
-        buttons.pack(fill=X, padx=15, pady=18)
-        QtButton(
-            buttons, text="تحميل الفاتورة", command=load_return_items
-        ).pack(side=RIGHT, padx=4)
-        QtButton(
-            buttons,
-            text="تسجيل المرتجع",
-            command=submit_return,
-            fg_color="#a93226",
-            hover_color="#922b21",
-        ).pack(side=LEFT, padx=4)
+        buttons = QHBoxLayout()
+        load_button = _make_button(dialog, "تحميل الفاتورة", kind="primary", palette=palette)
+        submit_button = _make_button(dialog, "تسجيل المرتجع", kind="danger", palette=palette)
+        buttons.addWidget(load_button)
+        buttons.addStretch(1)
+        buttons.addWidget(submit_button)
+        layout.addLayout(buttons)
+        load_button.clicked.connect(load_return_items)
+        submit_button.clicked.connect(submit_return)
+        dialog.exec()
 
     def open_session_reports():
-        shift_id = current_shift.get("row")
-        shift_id = int(shift_id[0]) if shift_id else current_shift.get("last_id")
+        shift_row = current_shift.get("row")
+        shift_id = int(shift_row[0]) if shift_row else current_shift.get("last_id")
         if not shift_id:
-            dialogs.showinfo(
-                "تقارير الوردية", "ابدأ وردية أولًا لإنشاء مجلد التقارير.", parent=top
-            )
+            _message("info", "تقارير الوردية", "ابدأ وردية أولًا لإنشاء مجلد التقارير.", top)
             return
         try:
             folder = get_cashier_session_folder(int(shift_id), create=True)
@@ -1203,399 +1289,341 @@ def build_sell_ui(parent, username):
             else:
                 subprocess.Popen(["xdg-open", folder])
         except Exception as exc:
-            dialogs.showerror(
-                "تعذر فتح مجلد التقارير",
-                f"تعذر فتح المجلد الخاص بالوردية:\n{type(exc).__name__}: {exc}",
-                parent=top,
-            )
+            _message("error", "تعذر فتح مجلد التقارير", f"تعذر فتح المجلد الخاص بالوردية:\n{type(exc).__name__}: {exc}", top)
 
-    def on_warehouse_change(_value=None):
+    def on_warehouse_change(_index: int = -1):
         try:
             fresh_products = {
                 int(product[0]): product
                 for product in get_cashier_products("", current_warehouse_id())
             }
-            for pid, entry in cart.items():
-                if pid in fresh_products:
-                    entry["product"] = fresh_products[pid]
+            for product_id, entry in cart.items():
+                if product_id in fresh_products:
+                    entry["product"] = fresh_products[product_id]
             build_quick_access()
             repaint_cart()
         except Exception as exc:
-            dialogs.showerror("خطأ", str(exc), parent=top)
+            _message("error", "خطأ", str(exc), top)
 
+    # ---------------- customer debt management ----------------
+    debt_window: dict[str, QDialog | None] = {"win": None}
 
-    debt_window = {"win": None}
- 
     def show_debt_customers():
         old = debt_window["win"]
-        if old is not None and old.winfo_exists():
-            old.lift()
-            old.focus_force()
-            return
- 
-        win = QtDialog(parent)
+        if old is not None:
+            try:
+                if old.isVisible():
+                    old.raise_()
+                    old.activateWindow()
+                    return
+            except RuntimeError:
+                pass
+        debt_window["win"] = None
+
+        win = QDialog(page)
         debt_window["win"] = win
-        win.title("العملاء المدينون")
-        win.geometry("900x590")
-        win.transient(top)
- 
-        search_debt_var = StringVar()
-        summary_var = StringVar(value="")
-        debtors: dict[int, tuple] = {}   # customer_id -> (id, name, debt_minor)
- 
-        # ---------------- header: action buttons ----------------
-        header = QtFrame(win, fg_color=card, corner_radius=12)
-        header.pack(fill=X, padx=12, pady=(12, 6))
-        QtLabel(
-            header, text="العملاء المدينون", font=("Arial", 20, "bold"), text_color=text
-        ).pack(side=RIGHT, padx=14, pady=10)
-        pay_btn = QtButton(
-            header, text="تسديد الدين", width=105,
-            fg_color="#1f7a4d", hover_color="#17613d",
-        )
-        pay_btn.pack(side=LEFT, padx=(10, 3), pady=10)
-        update_btn = QtButton(header, text="تعديل الدين", width=105)
-        update_btn.pack(side=LEFT, padx=3, pady=10)
-        remove_btn = QtButton(
-            header, text="حذف الدين", width=105,
-            fg_color="#a93226", hover_color="#922b21",
-        )
-        remove_btn.pack(side=LEFT, padx=3, pady=10)
-        add_btn = QtButton(
-            header, text="إضافة دين", width=105,
-            fg_color="#b9770e", hover_color="#9a630b",
-        )
-        add_btn.pack(side=LEFT, padx=3, pady=10)
- 
-        # ---------------- search + summary ----------------
-        bar = QtFrame(win, fg_color="transparent")
-        bar.pack(fill=X, padx=12, pady=(0, 6))
-        search_entry_debt = QtLineEdit(
-            bar, textvariable=search_debt_var, justify="right", height=36,
-            placeholder_text="ابحث باسم العميل أو رقم الهاتف",
-        )
-        search_entry_debt.pack(side=RIGHT, fill=X, expand=True, padx=(0, 6))
-        QtButton(
-            bar, text="تحديث", width=80, height=36,
-            fg_color="#555555", hover_color="#444444",
-            command=lambda: refresh(),
-        ).pack(side=LEFT)
- 
-        # ---------------- table ----------------
-        debt_columns = ("id", "name", "phone", "debt")
-        debt_tree = QtTreeWidget(
-            win, columns=debt_columns, show="headings", style="Cashier.Treeview",
-            selectmode="browse", displaycolumns=debt_columns[::-1],
-        )
-        for col, title, width in (
-            ("id", "الرقم", 70),
-            ("name", "العميل", 280),
-            ("phone", "الهاتف", 160),
-            ("debt", "الدين الحالي", 160),
-        ):
-            debt_tree.heading(col, text=title)
-            debt_tree.column(col, width=width, anchor=CENTER, stretch=(col == "name"))
-        debt_tree.pack(fill=BOTH, expand=True, padx=12, pady=(0, 6))
-        QtLabel(
-            win, textvariable=summary_var, text_color=muted, font=("Arial", 13, "bold")
-        ).pack(anchor="e", padx=14, pady=(0, 10))
- 
-        # ---------------- helpers ----------------
+        win.setWindowTitle("العملاء المدينون")
+        win.resize(900, 590)
+        win.setLayoutDirection(Qt.RightToLeft)
+        win.setStyleSheet(f"QDialog {{ background: {palette['surface']}; color: {palette['text']}; }}")
+        win.setAttribute(Qt.WA_DeleteOnClose, True)
+        layout = QVBoxLayout(win)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(7)
+
+        header = QFrame(win)
+        header.setStyleSheet(f"background: {palette['surface_alt']}; border-radius: 12px;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_layout.addWidget(_make_label(header, "العملاء المدينون", palette, size=18, bold=True))
+        header_layout.addStretch(1)
+        pay_button = _make_button(header, "تسديد الدين", kind="success", palette=palette, width=105)
+        update_button = _make_button(header, "تعديل الدين", kind="neutral", palette=palette, width=105)
+        remove_button = _make_button(header, "حذف الدين", kind="danger", palette=palette, width=105)
+        add_debt_button = _make_button(header, "إضافة دين", kind="warning", palette=palette, width=105)
+        header_layout.addWidget(pay_button)
+        header_layout.addWidget(update_button)
+        header_layout.addWidget(remove_button)
+        header_layout.addWidget(add_debt_button)
+        layout.addWidget(header)
+
+        search_bar = QWidget(win)
+        search_layout = QHBoxLayout(search_bar)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_debt_entry = _style_line_edit(QLineEdit(search_bar), palette, height=36)
+        search_debt_entry.setPlaceholderText("ابحث باسم العميل أو رقم الهاتف")
+        search_layout.addWidget(search_debt_entry, 1)
+        debt_refresh_button = _make_button(search_bar, "تحديث", kind="neutral", palette=palette, width=80, height=36)
+        search_layout.addWidget(debt_refresh_button)
+        layout.addWidget(search_bar)
+
+        debt_tree = QTableView(win)
+        debt_model = _DebtTableModel(debt_tree)
+        debt_proxy = QSortFilterProxyModel(debt_tree)
+        debt_proxy.setSourceModel(debt_model)
+        debt_proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        debt_proxy.setFilterKeyColumn(-1)  # Search all visible columns.
+        debt_proxy.setSortRole(Qt.ItemDataRole.UserRole + 1)
+        debt_tree.setModel(debt_proxy)
+        debt_tree.setSortingEnabled(True)
+        _configure_table_view(debt_tree, palette, (75, 280, 160, 160))
+        layout.addWidget(debt_tree, 1)
+        summary_label = _make_label(win, "", palette, size=12, bold=True, color=palette["muted"])
+        layout.addWidget(summary_label)
+
         def refresh(_event=None):
             try:
                 rows = get_debt_customers()
             except Exception as exc:
-                dialogs.showerror("خطأ", f"تعذر تحميل العملاء المدينين:\n{exc}", parent=win)
+                _message("error", "خطأ", f"تعذر تحميل العملاء المدينين:\n{exc}", win)
                 return
-            needle = search_debt_var.get().strip().casefold()
-            debtors.clear()
-            debt_tree.delete(*debt_tree.get_children())
-            total = 0
-            for cid, name, phone, debt in rows:
-                debtors[cid] = (cid, name, debt)
-                total += debt
-                if needle and needle not in f"{name} {phone}".casefold():
-                    continue
-                debt_tree.insert(
-                    "", END, iid=str(cid),
-                    values=(cid, name, phone, minor_to_money(debt)),
-                )
-            summary_var.set(
-                f"إجمالي الديون: {minor_to_money(total)}   |   عدد العملاء المدينين: {len(rows)}"
+
+            records = [
+                (int(customer_id), str(name), str(phone or ""), int(debt))
+                for customer_id, name, phone, debt in rows
+            ]
+            debt_model.set_records(records)
+            debt_proxy.setFilterFixedString(search_debt_entry.text().strip())
+            total = sum(record[3] for record in records)
+            summary_label.setText(
+                f"إجمالي الديون: {minor_to_money(total)}   |   عدد العملاء المدينين: {len(records)}"
             )
- 
+
         def selected_debtor():
-            sel = debt_tree.selection()
-            if not sel:
-                dialogs.showwarning("اختر عميلًا", "اختر عميلًا من القائمة أولًا.", parent=win)
+            proxy_index = debt_tree.currentIndex()
+            if not proxy_index.isValid():
+                _message("warning", "اختر عميلًا", "اختر عميلًا من القائمة أولًا.", win)
                 return None
-            return debtors.get(int(sel[0]))
- 
+            source_index = debt_proxy.mapToSource(
+                proxy_index.sibling(proxy_index.row(), 0)
+            )
+            return debt_model.record_at(source_index.row())
+
         def current_shift_id():
             row = current_shift["row"]
             return int(row[0]) if row else None
- 
-        def form_dialog(title, fields, on_submit, submit_text="تأكيد"):
-            """fields: (key, label, 'entry'|'combo', default, values).
-            on_submit(values) may return a message to show after success."""
-            dlg = QtDialog(win)
-            dlg.title(title)
-            dlg.geometry(f"410x{150 + 78 * len(fields)}")
-            dlg.resizable(False, False)
-            dlg.transient(win)
-            dlg.grab_set()
-            variables = {}
-            first_entry = None
-            for key, label, kind, default, values in fields:
-                QtLabel(
-                    dlg, text=label, anchor="e", justify="right",
-                    font=("Arial", 12, "bold"), wraplength=370,
-                ).pack(fill=X, padx=16, pady=(12, 2))
-                var = StringVar(value=default)
+
+        def form_dialog(title: str, fields: list[tuple], on_submit: Callable,
+                        submit_text: str = "تأكيد", confirm: Callable | None = None):
+            """Open a small modal form. Field tuple: key, label, kind, default, values."""
+            dlg = _new_dialog(win, title, palette)
+            dlg.setMinimumWidth(410)
+            form_layout = QFormLayout()
+            form_layout.setContentsMargins(16, 14, 16, 8)
+            form_layout.setVerticalSpacing(8)
+            form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            variables: dict[str, QWidget] = {}
+            first_entry: QLineEdit | None = None
+            for key, label, kind, default, choices in fields:
                 if kind == "combo":
-                    QtComboBox(
-                        dlg, variable=var, values=list(values), state="readonly", height=34
-                    ).pack(fill=X, padx=16)
+                    widget = _style_combo(QComboBox(dlg), palette, 34)
+                    for value in choices:
+                        widget.addItem(str(value), value)
+                    target = widget.findText(str(default))
+                    if target >= 0:
+                        widget.setCurrentIndex(target)
                 else:
-                    entry = QtLineEdit(dlg, textvariable=var, justify="right", height=34)
-                    entry.pack(fill=X, padx=16)
+                    widget = _style_line_edit(QLineEdit(dlg), palette, height=34)
+                    widget.setText(str(default))
                     if first_entry is None:
-                        first_entry = entry
-                variables[key] = var
- 
-            def submit(_event=None):
-                try:
-                    message = on_submit({k: v.get() for k, v in variables.items()})
-                except Exception as exc:
-                    dialogs.showerror("تعذر تنفيذ العملية", str(exc), parent=dlg)
+                        first_entry = widget
+                form_layout.addRow(_make_label(dlg, label, palette, size=10, bold=True), widget)
+                variables[key] = widget
+            body = QVBoxLayout(dlg)
+            body.addLayout(form_layout)
+            button_row = QHBoxLayout()
+            submit_button = _make_button(dlg, submit_text, kind="primary", palette=palette)
+            cancel_button = _make_button(dlg, "إلغاء", kind="neutral", palette=palette)
+            button_row.addWidget(submit_button)
+            button_row.addStretch(1)
+            button_row.addWidget(cancel_button)
+            body.addLayout(button_row)
+
+            def submit():
+                values = {}
+                for key, widget in variables.items():
+                    values[key] = widget.currentData() if isinstance(widget, QComboBox) else widget.text()
+                    if values[key] is None and isinstance(widget, QComboBox):
+                        values[key] = widget.currentText()
+                if confirm is not None and not confirm(values, dlg):
                     return
-                dlg.grab_release()
-                dlg.destroy()
+                try:
+                    message = on_submit(values)
+                except Exception as exc:
+                    _message("error", "تعذر تنفيذ العملية", str(exc), dlg)
+                    return
+                dlg.accept()
                 refresh()
                 if message:
-                    dialogs.showinfo(title, message, parent=win)
- 
-            row = QtFrame(dlg, fg_color="transparent")
-            row.pack(fill=X, padx=16, pady=16)
-            QtButton(row, text=submit_text, command=submit).pack(side=RIGHT, padx=(4, 0))
-            QtButton(
-                row, text="إلغاء", fg_color="#555555", hover_color="#444444",
-                command=dlg.destroy,
-            ).pack(side=LEFT, padx=(0, 4))
-            dlg.bind("<Escape>", lambda _e: dlg.destroy())
+                    _message("info", title, message, win)
+
+            submit_button.clicked.connect(submit)
+            cancel_button.clicked.connect(dlg.reject)
             if first_entry is not None:
-                dlg.bind("<Return>", submit)
-                dlg.after(100, first_entry.focus_set)
- 
-        # ---------------- actions ----------------
+                first_entry.returnPressed.connect(submit)
+                QTimer.singleShot(100, first_entry.setFocus)
+            dlg.exec()
+
         def pay_selected():
             picked = selected_debtor()
             if not picked:
                 return
-            cid, name, debt = picked
+            customer_id, name, debt = picked
             if current_shift_id() is None:
-                dialogs.showwarning(
-                    "لا توجد وردية مفتوحة", "ابدأ وردية الكاشير قبل تسديد الدين.", parent=win
-                )
+                _message("warning", "لا توجد وردية مفتوحة", "ابدأ وردية الكاشير قبل تسديد الدين.", win)
                 return
- 
-            def submit(v):
-                method_id = method_labels.get(v["method"])
+
+            def submit(values):
+                method_id = method_labels.get(values["method"])
                 if method_id is None:
                     raise ValueError("اختر طريقة دفع")
-                amount = money_to_minor(v["amount"] or "0")
-                result = pay_customer_debt(
-                    cid, method_id, cashier_id, current_shift_id(), amount
-                )
+                amount = money_to_minor(values["amount"] or "0")
+                result = pay_customer_debt(customer_id, method_id, cashier_id, current_shift_id(), amount)
                 return (
                     f"تم تسجيل التسديد {result['number']}\n"
                     f"المبلغ: {minor_to_money(result['amount'])}\n"
                     f"المتبقي على العميل: {minor_to_money(result['remaining_debt'])}"
                 )
- 
+
             form_dialog(
                 f"تسديد دين: {name}",
-                [
-                    ("method", "طريقة الدفع", "combo", method_var.get(), list(method_labels)),
-                    ("amount", f"المبلغ المسدد (الدين الحالي {minor_to_money(debt)})",
-                     "entry", minor_to_money(debt), None),
-                ],
+                [("method", "طريقة الدفع", "combo", payment_menu.currentText(), list(method_labels)),
+                 ("amount", f"المبلغ المسدد (الدين الحالي {minor_to_money(debt)})", "entry", minor_to_money(debt), None)],
                 submit, "تسديد",
             )
- 
+
         def update_selected():
             picked = selected_debtor()
             if not picked:
                 return
-            cid, name, debt = picked
- 
-            def submit(v):
+            customer_id, name, debt = picked
+
+            def submit(values):
                 result = update_customer_debt(
-                    cid, money_to_minor(v["new_debt"] or "0"), cashier_id,
-                    v["reason"], current_shift_id(),
+                    customer_id, money_to_minor(values["new_debt"] or "0"), cashier_id,
+                    values["reason"], current_shift_id(),
                 )
                 return (
                     f"تم تعديل الدين ({result['number']})\n"
-                    f"من {minor_to_money(result['debt_before'])} "
-                    f"إلى {minor_to_money(result['debt_after'])}"
+                    f"من {minor_to_money(result['debt_before'])} إلى {minor_to_money(result['debt_after'])}"
                 )
- 
+
             form_dialog(
                 f"تعديل دين: {name}",
-                [
-                    ("new_debt", f"قيمة الدين الجديدة (الحالية {minor_to_money(debt)})",
-                     "entry", minor_to_money(debt), None),
-                    ("reason", "سبب التعديل *", "entry", "", None),
-                ],
+                [("new_debt", f"قيمة الدين الجديدة (الحالية {minor_to_money(debt)})", "entry", minor_to_money(debt), None),
+                 ("reason", "سبب التعديل *", "entry", "", None)],
                 submit, "حفظ التعديل",
             )
- 
+
         def remove_selected_debt():
             picked = selected_debtor()
             if not picked:
                 return
-            cid, name, debt = picked
- 
-            def submit(v):
-                amount = money_to_minor(v["amount"] or "0")
-                if not dialogs.askyesno(
+            customer_id, name, debt = picked
+
+            def confirm_remove(values, dlg):
+                try:
+                    amount = money_to_minor(values["amount"] or "0")
+                except Exception as exc:
+                    _message("error", "خطأ", str(exc), dlg)
+                    return False
+                return _ask_yes_no(
                     "تأكيد حذف الدين",
                     f"سيتم حذف {minor_to_money(amount)} من دين العميل {name} "
                     "دون استلام أي نقدية، وسيُسجَّل ذلك للمدير.\nهل تريد المتابعة؟",
-                    parent=win,
-                ):
-                    raise ValueError("تم إلغاء العملية")
+                    dlg,
+                )
+
+            def submit(values):
                 result = remove_customer_debt(
-                    cid, cashier_id, v["reason"], amount, current_shift_id()
+                    customer_id, cashier_id, values["reason"],
+                    money_to_minor(values["amount"] or "0"), current_shift_id(),
                 )
-                return (
-                    f"تم حذف الدين ({result['number']})\n"
-                    f"المتبقي على العميل: {minor_to_money(result['debt_after'])}"
-                )
- 
+                return f"تم حذف الدين ({result['number']})\nالمتبقي على العميل: {minor_to_money(result['debt_after'])}"
+
             form_dialog(
                 f"حذف دين: {name}",
-                [
-                    ("amount", f"المبلغ المراد حذفه (الدين الحالي {minor_to_money(debt)})",
-                     "entry", minor_to_money(debt), None),
-                    ("reason", "سبب الحذف *", "entry", "", None),
-                ],
-                submit, "حذف",
+                [("amount", f"المبلغ المراد حذفه (الدين الحالي {minor_to_money(debt)})", "entry", minor_to_money(debt), None),
+                 ("reason", "سبب الحذف *", "entry", "", None)],
+                submit, "حذف", confirm=confirm_remove,
             )
- 
+
         def add_debt():
-            names = [label for label, cid in customer_labels.items() if cid is not None]
+            names = [label for label, customer_id in customer_labels.items() if customer_id is not None]
             if not names:
-                dialogs.showwarning(
-                    "لا يوجد عملاء",
-                    "الدين يُسجَّل للعملاء المسجلين فقط. أضف العميل أولًا من صفحة البيع.",
-                    parent=win,
-                )
+                _message("warning", "لا يوجد عملاء", "الدين يُسجَّل للعملاء المسجلين فقط. أضف العميل أولًا من صفحة البيع.", win)
                 return
-            preselect = names[0]
-            picked = debt_tree.selection()
-            if picked:
-                for label, cid in customer_labels.items():
-                    if cid == int(picked[0]):
-                        preselect = label
-                        break
- 
-            def submit(v):
-                cid = customer_labels.get(v["customer"])
-                if cid is None:
+            selected_name = names[0]
+            selected_debt_row = debt_tree.currentIndex()
+            if selected_debt_row.isValid():
+                source_index = debt_proxy.mapToSource(
+                    selected_debt_row.sibling(selected_debt_row.row(), 0)
+                )
+                selected_record = debt_model.record_at(source_index.row())
+                if selected_record:
+                    selected_id = selected_record[0]
+                    selected_name = next(
+                        (label for label, cid in customer_labels.items() if cid == selected_id),
+                        selected_name,
+                    )
+
+            def submit(values):
+                customer_id = customer_labels.get(values["customer"])
+                if customer_id is None:
                     raise ValueError("اختر عميلًا مسجلًا؛ لا يُسجَّل دين لغير العملاء")
                 result = add_customer_debt(
-                    cid, money_to_minor(v["amount"] or "0"), cashier_id,
-                    v["reason"], current_shift_id(),
+                    customer_id, money_to_minor(values["amount"] or "0"), cashier_id,
+                    values["reason"], current_shift_id(),
                 )
-                return (
-                    f"تمت إضافة الدين ({result['number']})\n"
-                    f"إجمالي دين العميل الآن: {minor_to_money(result['debt_after'])}"
-                )
- 
+                return f"تمت إضافة الدين ({result['number']})\nإجمالي دين العميل الآن: {minor_to_money(result['debt_after'])}"
+
             form_dialog(
                 "إضافة دين",
-                [
-                    ("customer", "العميل", "combo", preselect, names),
-                    ("amount", "مبلغ الدين المضاف", "entry", "", None),
-                    ("reason", "سبب إضافة الدين *", "entry", "", None),
-                ],
+                [("customer", "العميل", "combo", selected_name, names),
+                 ("amount", "مبلغ الدين المضاف", "entry", "", None),
+                 ("reason", "سبب إضافة الدين *", "entry", "", None)],
                 submit, "إضافة",
             )
- 
-        pay_btn.configure(command=pay_selected)
-        update_btn.configure(command=update_selected)
-        remove_btn.configure(command=remove_selected_debt)
-        add_btn.configure(command=add_debt)
-        search_entry_debt.bind("<KeyRelease>", refresh)
- 
+
+        pay_button.clicked.connect(pay_selected)
+        update_button.clicked.connect(update_selected)
+        remove_button.clicked.connect(remove_selected_debt)
+        add_debt_button.clicked.connect(add_debt)
+        search_debt_entry.textChanged.connect(refresh)
+        debt_refresh_button.clicked.connect(refresh)
+        win.destroyed.connect(lambda *_: debt_window.update({"win": None}))
         refresh()
-        win.after(150, win.focus_force)
- 
- 
-    # Bind callbacks after helper declarations.
-    add_button.configure(command=search_and_add)
-    search_entry.bind("<Return>", search_and_add)
-    tree.bind("<Delete>", lambda _event: remove_selected())
-    tree.bind("<Double-1>", lambda _event: change_selected_qty(1))
-    warehouse_menu.configure(command=on_warehouse_change)
-    new_customer_check.configure(
-        command=lambda: refresh_customer_mode(reset_payment=True)
-    )
-    customer_menu.configure(
-        command=lambda _value: refresh_customer_mode(reset_payment=True)
-    )
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
-    QtButton(
-        controls_body,
-        text="تأكيد البيع",
-        command=confirm_sale,
-        height=44,
-        font=("Arial", 17, "bold"),
-        fg_color="#1f7a4d",
-        hover_color="#17613d",
-    ).pack(fill=X, padx=12, pady=(10, 6))
-    QtButton(
-        controls_body,
-        text="مرتجع بيع",
-        command=open_return_dialog,
-        height=38,
-        fg_color="#a93226",
-        hover_color="#922b21",
-    ).pack(fill=X, padx=12, pady=5)
-    QtButton(
-        controls_body,
-        text="تحديث الأصناف والعملاء",
-        command=lambda: (build_quick_access(), refresh_customers()),
-        height=36,
-        fg_color="#555555",
-        hover_color="#444444",
-    ).pack(fill=X, padx=12, pady=5)
-    QtButton(
-        controls_body,
-        text="فتح مجلد تقارير الوردية",
-        command=open_session_reports,
-        height=36,
-        fg_color="#285c8f",
-        hover_color="#1f496f",
-    ).pack(fill=X, padx=12, pady=5)
-    QtButton(
-        controls_body,
-        text="اظهار قائمة الديون",
-        command=show_debt_customers, #TO-DO
-        height=36,
-        fg_color="#285c8f",
-        hover_color="#1f496f",
+    # ---------------- connect signals and add checkout actions ----------------
+    add_button.clicked.connect(search_and_add)
+    search_entry.returnPressed.connect(search_and_add)
+    increase_button.clicked.connect(lambda: change_selected_qty(1))
+    decrease_button.clicked.connect(lambda: change_selected_qty(-1))
+    remove_button.clicked.connect(remove_selected)
+    clear_button.clicked.connect(clear_cart)
+    tree.doubleClicked.connect(lambda _index: change_selected_qty(1))
+    delete_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), tree)
+    delete_shortcut.activated.connect(remove_selected)
+    warehouse_menu.currentIndexChanged.connect(on_warehouse_change)
+    new_customer_check.toggled.connect(lambda _checked: refresh_customer_mode(reset_payment=True))
+    customer_menu.currentIndexChanged.connect(lambda _index: refresh_customer_mode(reset_payment=True))
 
-    ).pack(fill=X, padx=12, pady=5)
-    QtLabel(
+    confirm_button = _make_button(controls_body, "تأكيد البيع", kind="success", palette=palette, height=46, font_size=13)
+    controls_body_layout.addWidget(confirm_button)
+    confirm_button.clicked.connect(confirm_sale)
+    controls_body_layout.addWidget(_make_button(controls_body, "مرتجع بيع", open_return_dialog, kind="danger", palette=palette, height=39))
+    controls_body_layout.addWidget(_make_button(controls_body, "تحديث الأصناف والعملاء", lambda: (build_quick_access(force=True), refresh_customers()), kind="neutral", palette=palette, height=37))
+    controls_body_layout.addWidget(_make_button(controls_body, "فتح مجلد تقارير الوردية", open_session_reports, kind="info", palette=palette, height=37))
+    controls_body_layout.addWidget(_make_button(controls_body, "إدارة ديون العملاء", show_debt_customers, kind="info", palette=palette, height=37))
+    controls_body_layout.addWidget(_make_label(
         controls_body,
-        text="اختصارات: Enter لإضافة البحث، Delete لحذف الصنف، والنقر المزدوج لزيادة الكمية.",
-        text_color=muted,
-        font=("Arial", 10),
-        wraplength=265,
-        justify=RIGHT,
-    ).pack(fill=X, padx=12, pady=(10, 8))
+        "اختصارات: Enter لإضافة البحث، Delete لحذف الصنف، والنقر المزدوج لزيادة الكمية.",
+        palette, size=9, color=palette["muted"], wrap=True,
+    ))
+    controls_body_layout.addStretch(1)
 
     build_quick_access()
     refresh_shift_ui()
