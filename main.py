@@ -325,29 +325,6 @@ def _restore_seed_logging(
             pass
 
 
-# ============================================================
-# PDF font registration
-# ============================================================
-def register_fonts() -> None:
-    """Register Amiri for PDF reports in source and PyInstaller builds."""
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-
-    candidates = [_application_directory() / "Amiri-Regular.ttf"]
-    bundle_dir = _bundle_directory()
-    if bundle_dir is not None:
-        candidates.append(bundle_dir / "Amiri-Regular.ttf")
-
-    font_path = next((path for path in candidates if path.is_file()), None)
-    if font_path is None:
-        searched = "\n".join(str(path) for path in candidates)
-        raise FileNotFoundError(
-            "Required report font Amiri-Regular.ttf was not found.\n"
-            f"Searched locations:\n{searched}"
-        )
-
-    if "Amiri" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(TTFont("Amiri", str(font_path)))
 
 
 # ============================================================
@@ -596,17 +573,6 @@ class _StartupWorker(QObject):
             _log_stage("background startup: db.initialize() started")
             self.database.initialize()
             _log_stage("background startup: db.initialize() completed")
-
-            # PDF fonts are optional for showing the ERP UI; report errors but
-            # do not prevent login when the font is missing from a build.
-            try:
-                register_fonts()
-                _log_stage("PDF fonts registered")
-            except Exception:
-                LOGGER.exception(
-                    "PDF font registration failed; continuing without blocking GUI startup"
-                )
-
             from Services.bootstrap import ensure_first_admin
             _log_stage("ensure_first_admin() started")
             first_password = ensure_first_admin()
@@ -824,6 +790,5 @@ if __name__ == "__main__":
 # Windows PyInstaller example:
 # pyinstaller --noconfirm --clean --onefile --console --name program ^
 # --distpath output --workpath build ^
-# --add-data "Amiri-Regular.ttf;." ^
 # --add-data "UI\assets;UI\assets" ^
 # --collect-all PySide6 --collect-all keyring main.py
