@@ -788,7 +788,6 @@ if __name__ == "__main__":
 
 
 # Windows PyInstaller example:
-# pyinstaller --noconfirm --clean --onefile --console --name program ^
-# --distpath output --workpath build ^
-# --add-data "UI\assets;UI\assets" ^
-# --collect-all PySide6 --collect-all keyring main.py
+""" 
+pyinstaller --noconfirm --clean --onefile --console --name program --distpath output --workpath build --add-data "UI\assets;UI\assets" --collect-all PySide6 --collect-all keyring main.py
+ """
