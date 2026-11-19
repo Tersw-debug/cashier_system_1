@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QVBoxLayout,
     QWidget,
+    QFileDialog
 )
 
 from UI.common import is_dark
@@ -65,6 +66,135 @@ def _appearance_colors() -> dict[str, str]:
         "border": "#333943" if dark else "#dce2e8",
         "input": "#171d26" if dark else "#fbfcfd",
     }
+
+
+def _optional_int(values: dict[str, Any], key: str) -> int | None:
+    raw = values.get(key)
+    if raw is None or str(raw).strip() == "":
+        return None
+    return int(raw)
+
+
+def export_sales_excel(_checked: bool = False) -> bool:
+    file_path, _ = QFileDialog.getSaveFileName(
+        _root, "تصدير المبيعات", "sales.xlsx", "Excel Workbook (*.xlsx)"
+    )
+    if not file_path:
+        return False
+    if not file_path.lower().endswith(".xlsx"):
+        file_path += ".xlsx"
+    try:
+        exported_count = svc.export_sales_excel(file_path)
+    except Exception as exc:
+        _message("error", "فشل تصدير المبيعات", str(exc), _root)
+        return False
+    _message("info", "اكتمل التصدير", f"تم تصدير {exported_count:,} سجلًا.\n{file_path}", _root)
+    return True
+
+
+def export_storage_excel(_checked: bool = False) -> bool:
+    file_path, _ = QFileDialog.getSaveFileName(
+        _root, "تصدير أرصدة المخزون", "storage_balances.xlsx", "Excel Workbook (*.xlsx)"
+    )
+    if not file_path:
+        return False
+    if not file_path.lower().endswith(".xlsx"):
+        file_path += ".xlsx"
+    try:
+        exported_count = svc.export_storage_excel(file_path)
+    except Exception as exc:
+        _message("error", "فشل تصدير المخزون", str(exc), _root)
+        return False
+    _message("info", "اكتمل التصدير", f"تم تصدير {exported_count:,} سجلًا.\n{file_path}", _root)
+    return True
+
+
+def export_debts_excel(_checked: bool = False) -> bool:
+    file_path, _ = QFileDialog.getSaveFileName(
+        _root, "تصدير سجل حركة الديون", "debt_log.xlsx", "Excel Workbook (*.xlsx)"
+    )
+    if not file_path:
+        return False
+    if not file_path.lower().endswith(".xlsx"):
+        file_path += ".xlsx"
+    try:
+        exported_count = svc.export_debts_excel(file_path)
+    except Exception as exc:
+        _message("error", "فشل تصدير سجل الديون", str(exc), _root)
+        return False
+    _message("info", "اكتمل التصدير", f"تم تصدير {exported_count:,} سجلًا.\n{file_path}", _root)
+    return True
+
+
+def export_stock_movements_excel(_checked: bool = False) -> bool:
+    file_path, _ = QFileDialog.getSaveFileName(
+        _root, "تصدير حركات المخزون", "stock_movements.xlsx", "Excel Workbook (*.xlsx)"
+    )
+    if not file_path:
+        return False
+    if not file_path.lower().endswith(".xlsx"):
+        file_path += ".xlsx"
+    try:
+        exported_count = svc.export_stock_movements_excel(file_path)
+    except Exception as exc:
+        _message("error", "فشل تصدير حركات المخزون", str(exc), _root)
+        return False
+    _message("info", "اكتمل التصدير", f"تم تصدير {exported_count:,} سجلًا.\n{file_path}", _root)
+    return True
+
+
+def export_shifts_excel(_checked: bool = False) -> bool:
+    file_path, _ = QFileDialog.getSaveFileName(
+        _root, "تصدير ورديات الخزينة", "cash_shifts.xlsx", "Excel Workbook (*.xlsx)"
+    )
+    if not file_path:
+        return False
+    if not file_path.lower().endswith(".xlsx"):
+        file_path += ".xlsx"
+    try:
+        exported_count = svc.export_shifts_excel(file_path)
+    except Exception as exc:
+        _message("error", "فشل تصدير الورديات", str(exc), _root)
+        return False
+    _message("info", "اكتمل التصدير", f"تم تصدير {exported_count:,} سجلًا.\n{file_path}", _root)
+    return True
+
+
+def open_excel_export_window(_checked: bool = False):
+    """Open the export chooser; each button calls its own service function."""
+    colors = _appearance_colors()
+    win = QDialog(_root)
+    win.setWindowTitle("تصدير بيانات Excel")
+    win.resize(430, 430)
+    win.setMinimumWidth(380)
+    win.setLayoutDirection(Qt.RightToLeft)
+    win.setModal(True)
+    win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
+
+    layout = QVBoxLayout(win)
+    layout.setContentsMargins(20, 18, 20, 18)
+    layout.setSpacing(10)
+    layout.addWidget(_label("اختر الجدول الذي تريد تصديره", win, size=17, bold=True))
+    layout.addWidget(_label(
+        "سيتم تصدير جميع السجلات من الجدول المحدد إلى ملف Excel مستقل.",
+        win, size=10, color=colors["subtext"], wrap=True,
+    ))
+
+    export_actions = [
+        ("تصدير المبيعات", export_sales_excel),
+        ("تصدير أرصدة المخزون", export_storage_excel),
+        ("تصدير سجل حركة الديون", export_debts_excel),
+        ("تصدير حركات المخزون", export_stock_movements_excel),
+        ("تصدير ورديات الخزينة", export_shifts_excel),
+    ]
+    for label, callback in export_actions:
+        layout.addWidget(_button(win, label, callback, height=40))
+
+    layout.addStretch(1)
+    layout.addWidget(_button(win, "إغلاق", win.accept, color="#6b7280", hover="#555e6b"))
+    win.exec()
+    return win
+
 
 
 def _button(parent: QWidget, text: str, callback: Callable | None = None,
@@ -447,14 +577,39 @@ def _prompt_form(title: str, fields: list[dict], on_submit: Callable[[dict], Any
     footer.addStretch(1)
 
     def submit() -> None:
-        values = {name: _widget_value(widget, modes[name]) for name, widget in widgets.items()}
+        values = {
+            name: _widget_value(widget, modes[name])
+            for name, widget in widgets.items()
+        }
+
+        missing = [
+            field["label"]
+            for field in fields
+            if field.get("required")
+            and (
+                values.get(field["name"]) is None
+                or str(values[field["name"]]).strip() == ""
+            )
+        ]
+
+        if missing:
+            _message(
+                "warning",
+                "بيانات مطلوبة",
+                "يرجى إدخال البيانات التالية:\n" + "\n".join(missing),
+                win,
+            )
+            return
+
         try:
             result = on_submit(values)
         except Exception as exc:
             _message("error", "تعذر الحفظ", str(exc), win)
             return
+
         if result is False:
             return
+
         win.accept()
 
     save_button = _button(win, "حفظ", submit, color=colors["success"], hover="#176c4b", width=100)
@@ -649,39 +804,77 @@ def _selected_row(table: QTableView) -> list[Any] | None:
             for column in range(model.columnCount())]
 
 
-def _open_audit_log_details(table: QTableView, parent: QWidget, columns: list[str]):
-    """Show all audit fields, including formatted old/new JSON values."""
+def _open_audit_log_details(
+    table: QTableView,
+    parent: QWidget,
+    columns: list[str],
+):
+    """Show audit/debt details, formatting JSON columns when present."""
     values = _selected_row(table)
+
     if not values:
         _message("warning", "تنبيه", "اختر سجلًا أولًا لعرض تفاصيله.", parent)
         return
 
+    json_columns = {
+        index
+        for index, heading in enumerate(columns)
+        if "JSON" in str(heading).upper()
+    }
+
+    is_debt_log = bool(json_columns)
+
     details = {}
+
     for index, heading in enumerate(columns):
-        value: Any = values[index] if index < len(values) else ""
-        if index in (7, 8) and value:
+        value = values[index] if index < len(values) else ""
+
+        if index in json_columns and value:
             try:
                 value = json.loads(value)
             except (TypeError, ValueError):
                 pass
+
         details[str(heading)] = value
 
+    title = (
+        "تفاصيل سجل حركة الديون"
+        if is_debt_log
+        else "تفاصيل سجل التدقيق"
+    )
+
     colors = _appearance_colors()
+
     win = QDialog(parent)
-    win.setWindowTitle("تفاصيل سجل التدقيق")
+    win.setWindowTitle(title)
     win.resize(950, 700)
     win.setMinimumSize(650, 450)
     win.setLayoutDirection(Qt.RightToLeft)
-    win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
+    win.setStyleSheet(
+        f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}"
+    )
+
     layout = QVBoxLayout(win)
-    heading = _label("تفاصيل سجل التدقيق", win, size=20, bold=True)
-    layout.addWidget(heading)
+    layout.addWidget(_label(title, win, size=20, bold=True))
+
     text_box = QPlainTextEdit(win)
     text_box.setFont(QFont("Consolas", 11))
-    text_box.setPlainText(json.dumps(details, ensure_ascii=False, indent=2, default=str))
+    text_box.setPlainText(
+        json.dumps(details, ensure_ascii=False, indent=2, default=str)
+    )
     text_box.setReadOnly(True)
+
     layout.addWidget(text_box, 1)
-    close_button = _button(win, "إغلاق", win.accept, color="#6b7280", hover="#555e6b", width=120)
+
+    close_button = _button(
+        win,
+        "إغلاق",
+        win.accept,
+        color="#6b7280",
+        hover="#555e6b",
+        width=120,
+    )
+
     layout.addWidget(close_button, 0, Qt.AlignHCenter)
     win.exec()
 
@@ -741,14 +934,55 @@ def _open_transfer(refresh: Callable[[], None]):
 
 def _open_sale_form(refresh: Callable[[], None]):
     fields = [
-        {"name": "customer_id", "label": "العميل ID (فارغ للبيع النقدي)", "type": "int?", "choice_values": svc.get_field_choices("customer_id")},
-        {"name": "warehouse_id", "label": "المخزن ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("warehouse_id")},
-        {"name": "product_id", "label": "المنتج ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
-        {"name": "quantity", "label": "الكمية", "type": "float", "required": True},
-        {"name": "unit_price", "label": "سعر الوحدة بوحدة العملة الصغرى", "type": "int", "required": True},
-        {"name": "discount", "label": "خصم البند بوحدة العملة الصغرى", "type": "int", "default": "0"},
-        {"name": "tax_rate_bp", "label": "نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)", "type": "int?"},
-        {"name": "shift_id", "label": "الوردية المفتوحة ID (اختياري)", "type": "int?", "choice_values": svc.get_field_choices("shift_id")},
+        {
+            "name": "customer_id",
+            "label": "العميل ID (فارغ للبيع النقدي)",
+            "type": "int?",
+            "choice_values": svc.get_field_choices("customer_id"),
+        },
+        {
+            "name": "warehouse_id",
+            "label": "المخزن ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("warehouse_id"),
+        },
+        {
+            "name": "product_id",
+            "label": "المنتج ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("product_id"),
+        },
+        {
+            "name": "quantity",
+            "label": "الكمية",
+            "type": "float",
+            "required": True,
+        },
+        {
+            "name": "unit_price",
+            "label": "سعر الوحدة بوحدة العملة الصغرى",
+            "type": "int",
+            "required": True,
+        },
+        {
+            "name": "discount",
+            "label": "خصم البند بوحدة العملة الصغرى",
+            "type": "int",
+            "default": "0",
+        },
+        {
+            "name": "tax_rate_bp",
+            "label": "نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)",
+            "type": "int?",
+        },
+        {
+            "name": "shift_id",
+            "label": "الوردية المفتوحة ID (اختياري، لتسوية النقدية)",
+            "type": "int?",
+            "choice_values": svc.get_field_choices("shift_id"),
+        },
         {"name": "note", "label": "ملاحظة"},
     ]
 
@@ -756,20 +990,41 @@ def _open_sale_form(refresh: Callable[[], None]):
         current_user_id = svc.get_username_id(username)
         if current_user_id is None:
             raise ValueError("لا يمكن تحديد المستخدم الحالي من اسم الدخول")
+
         sale_id = svc.create_sale(
-            int(values["customer_id"]) if values.get("customer_id") else None,
-            int(values["warehouse_id"]), int(values["product_id"]), float(values["quantity"]),
-            int(values["unit_price"]), int(values.get("discount") or 0),
-            int(values["tax_rate_bp"]) if values.get("tax_rate_bp") else None,
-            current_user_id, int(values["shift_id"]) if values.get("shift_id") else None,
-            note=values.get("note", ""), post=True,
+            customer_id=_optional_int(values, "customer_id"),
+            warehouse_id=int(values["warehouse_id"]),
+            product_id=int(values["product_id"]),
+            quantity=float(values["quantity"]),
+            unit_price=int(values["unit_price"]),
+            discount=int(values.get("discount") or 0),
+            tax_rate_bp=_optional_int(values, "tax_rate_bp"),
+            cashier_id=current_user_id,
+            shift_id=_optional_int(values, "shift_id"),
+            note=values.get("note", ""),
+            post=True,
         )
+
         refresh()
         _refresh_dashboard()
-        _message("info", "تم", f"تم تسجيل البيع وترحيل القيد. معرف البيع: {sale_id}", _root)
+        _message(
+            "info",
+            "تم",
+            f"تم تسجيل البيع وترحيل القيد. معرف البيع: {sale_id}",
+            _root,
+        )
 
-    _prompt_form("تسجيل عملية بيع", fields, submit,
-                 note="هذه النسخة تسجل بندًا واحدًا. البيع بعميل مسجل يُرحّل إلى حساب العملاء، والبيع النقدي بدون عميل يُرحّل إلى حساب النقدية. المبالغ بوحدة العملة الصغرى.")
+    _prompt_form(
+        "تسجيل عملية بيع",
+        fields,
+        submit,
+        note=(
+            "هذه النسخة تسجل بندًا واحدًا. البيع بعميل مسجل يُرحّل إلى حساب العملاء، "
+            "والبيع النقدي بدون عميل يُرحّل إلى حساب النقدية. "
+            "اختر الوردية المفتوحة عند الرغبة في إدراج البيع النقدي ضمن تسوية الخزينة. "
+            "المبالغ بوحدة العملة الصغرى."
+        ),
+    )
 
 
 def _open_purchase_order_form(refresh: Callable[[], None]):
@@ -798,60 +1053,176 @@ def _open_purchase_order_form(refresh: Callable[[], None]):
 
 def _open_sale_return_form(refresh: Callable[[], None]):
     fields = [
-        {"name": "original_sale_id", "label": "فاتورة البيع الأصلية ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("original_sale_id")},
-        {"name": "product_id", "label": "المنتج ID الموجود بالفاتورة", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
-        {"name": "quantity", "label": "كمية المرتجع", "type": "float", "required": True},
+        {
+            "name": "original_sale_id",
+            "label": "فاتورة البيع الأصلية ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("original_sale_id"),
+        },
+        {
+            "name": "product_id",
+            "label": "المنتج ID الموجود بالفاتورة",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("product_id"),
+        },
+        {
+            "name": "quantity",
+            "label": "كمية المرتجع",
+            "type": "float",
+            "required": True,
+        },
+        {
+            "name": "shift_id",
+            "label": "الوردية المفتوحة ID (للمرتجع النقدي)",
+            "type": "int?",
+            "choice_values": svc.get_field_choices("shift_id"),
+        },
         {"name": "note", "label": "ملاحظة"},
     ]
 
     def submit(values):
         current_user_id = svc.get_username_id(username)
+
         if current_user_id is None:
             raise ValueError("لا يمكن تحديد المستخدم الحالي من اسم الدخول")
+
         return_id = svc.create_sale_return(
-            int(values["original_sale_id"]), int(values["product_id"]), float(values["quantity"]),
-            current_user_id, note=values.get("note", ""),
+            original_sale_id=int(values["original_sale_id"]),
+            product_id=int(values["product_id"]),
+            quantity=float(values["quantity"]),
+            cashier_id=current_user_id,
+            shift_id=_optional_int(values, "shift_id"),
+            note=values.get("note", ""),
         )
+
         refresh()
         _refresh_dashboard()
-        _message("info", "تم", f"تم ترحيل مرتجع البيع. المعرف: {return_id}", _root)
+        _message(
+            "info",
+            "تم",
+            f"تم ترحيل مرتجع البيع. المعرف: {return_id}",
+            _root,
+        )
 
-    _prompt_form("مرتجع بيع", fields, submit,
-                 note="اختر فاتورة بيع مرحلة والمنتج المرتبط بها. يمنع النظام إرجاع كمية تتجاوز الكمية المباعة بعد المرتجعات السابقة.")
+    _prompt_form(
+        "مرتجع بيع",
+        fields,
+        submit,
+        note=(
+            "اختر فاتورة بيع مرحلة والمنتج المرتبط بها. "
+            "يمنع النظام إرجاع كمية تتجاوز الكمية المباعة بعد المرتجعات السابقة. "
+            "عند رد عملية بيع نقدية، اختر الوردية المناسبة حتى يظهر المرتجع "
+            "في تسوية الخزينة."
+        ),
+    )
 
 
 def _open_purchase_invoice_form(refresh: Callable[[], None]):
     fields = [
-        {"name": "supplier_id", "label": "المورد ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("supplier_id")},
-        {"name": "warehouse_id", "label": "المخزن ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("warehouse_id")},
-        {"name": "product_id", "label": "المنتج ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("product_id")},
-        {"name": "quantity", "label": "الكمية", "type": "float", "required": True},
-        {"name": "unit_cost", "label": "تكلفة الوحدة بوحدة العملة الصغرى", "type": "int", "required": True},
-        {"name": "tax_rate_bp", "label": "نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)", "type": "int?"},
+        {
+            "name": "supplier_id",
+            "label": "المورد ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("supplier_id"),
+        },
+        {
+            "name": "warehouse_id",
+            "label": "المخزن ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("warehouse_id"),
+        },
+        {
+            "name": "product_id",
+            "label": "المنتج ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("product_id"),
+        },
+        {
+            "name": "quantity",
+            "label": "الكمية",
+            "type": "float",
+            "required": True,
+        },
+        {
+            "name": "unit_cost",
+            "label": "تكلفة الوحدة بوحدة العملة الصغرى",
+            "type": "int",
+            "required": True,
+        },
+        {
+            "name": "tax_rate_bp",
+            "label": "نسبة الضريبة بالنقاط الأساسية (اتركها فارغة لاستخدام ضريبة المنتج)",
+            "type": "int?",
+        },
         {"name": "note", "label": "ملاحظة"},
     ]
 
     def submit(values):
-        if int(values.get("tax_rate_bp") or 0) > 0:
+        product_id = int(values["product_id"])
+
+        entered_tax_rate = _optional_int(values, "tax_rate_bp")
+
+        # An explicitly supplied value (including 0) overrides product tax.
+        # An empty field uses the active tax rate configured on the product.
+        effective_tax_rate = (
+            entered_tax_rate
+            if entered_tax_rate is not None
+            else svc.get_product_tax_rate_bp(product_id)
+        )
+
+        if effective_tax_rate > 0:
             ok = _ask_yes_no(
                 "تنبيه محاسبي",
-                "دليل الحسابات الحالي لا يحتوي على حساب ضريبة مدخلات قابلة للاسترداد. ستُضاف الضريبة إلى تكلفة المخزون في القيد. هل تريد المتابعة؟",
+                (
+                    "دليل الحسابات الحالي لا يحتوي على حساب ضريبة مدخلات "
+                    "قابلة للاسترداد. ستُضاف الضريبة إلى تكلفة المخزون في القيد.\n\n"
+                    f"نسبة الضريبة: {effective_tax_rate / 100:.2f}%\n\n"
+                    "هل تريد المتابعة؟"
+                ),
                 _root,
             )
+
             if not ok:
                 return False
+
         invoice_id = svc.create_purchase_invoice(
-            int(values["supplier_id"]), int(values["warehouse_id"]), int(values["product_id"]),
-            float(values["quantity"]), int(values["unit_cost"]),
-            int(values["tax_rate_bp"]) if values.get("tax_rate_bp") else None,
-            svc.get_username_id(username), values.get("note", ""), post=True,
+            supplier_id=int(values["supplier_id"]),
+            warehouse_id=int(values["warehouse_id"]),
+            product_id=product_id,
+            quantity=float(values["quantity"]),
+            unit_cost=int(values["unit_cost"]),
+            tax_rate_bp=effective_tax_rate,
+            user_id=svc.get_username_id(username),
+            note=values.get("note", ""),
+            post=True,
         )
+
         refresh()
         _refresh_dashboard()
-        _message("info", "تم", f"تم ترحيل فاتورة الشراء وزيادة المخزون. المعرف: {invoice_id}", _root)
 
-    _prompt_form("تسجيل فاتورة شراء", fields, submit,
-                 note="النسخة الحالية تدعم بندًا واحدًا فقط لكل عملية. ترحيل الفاتورة يزيد المخزون ويُنشئ قيدًا متوازنًا. إذا كانت ضريبة المدخلات قابلة للاسترداد، أضف حساب ضريبة مدخلات قبل استخدام هذا المسار.")
+        _message(
+            "info",
+            "تم",
+            f"تم ترحيل فاتورة الشراء وزيادة المخزون. المعرف: {invoice_id}",
+            _root,
+        )
+
+    _prompt_form(
+        "تسجيل فاتورة شراء",
+        fields,
+        submit,
+        note=(
+            "النسخة الحالية تدعم بندًا واحدًا فقط لكل عملية. "
+            "ترحيل الفاتورة يزيد المخزون ويُنشئ قيدًا متوازنًا. "
+            "إذا كانت ضريبة المدخلات قابلة للاسترداد، أضف حساب ضريبة مدخلات "
+            "قبل استخدام هذا المسار."
+        ),
+    )
 
 
 def _open_purchase_return_form(refresh: Callable[[], None]):
@@ -877,44 +1248,140 @@ def _open_purchase_return_form(refresh: Callable[[], None]):
 
 def _open_payment_form(refresh: Callable[[], None]):
     fields = [
-        {"name": "direction", "label": "الاتجاه", "required": True,
-         "choice_values": [("IN", "تحصيل من عميل"), ("OUT", "سداد لمورد")]},
-        {"name": "partner_id", "label": "الشريك ID", "type": "int?", "choice_values": svc.get_field_choices("partner_id")},
-        {"name": "method_id", "label": "طريقة الدفع ID", "type": "int", "required": True, "choice_values": svc.get_field_choices("method_id")},
-        {"name": "amount", "label": "المبلغ بوحدة العملة الصغرى", "type": "int", "required": True},
-        {"name": "shift_id", "label": "الوردية المفتوحة ID (اختياري)", "type": "int?", "choice_values": svc.get_field_choices("shift_id")},
-        {"name": "document_type", "label": "نوع المستند المراد التوزيع عليه (اختياري)",
-         "choice_values": [("SALE", "SALE"), ("PURCHASE_INVOICE", "PURCHASE_INVOICE")]},
-        {"name": "document_id", "label": "معرف المستند (اتركه فارغًا للدفع غير الموزع)", "type": "int?"},
-        {"name": "allocated_amount", "label": "المبلغ الموزع (اختياري)", "type": "int?"},
+        {
+            "name": "direction",
+            "label": "الاتجاه",
+            "required": True,
+            "choice_values": [
+                ("IN", "تحصيل من عميل"),
+                ("OUT", "سداد لمورد"),
+            ],
+        },
+        {
+            "name": "partner_id",
+            "label": "الشريك ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("partner_id"),
+        },
+        {
+            "name": "method_id",
+            "label": "طريقة الدفع ID",
+            "type": "int",
+            "required": True,
+            "choice_values": svc.get_field_choices("method_id"),
+        },
+        {
+            "name": "amount",
+            "label": "المبلغ بوحدة العملة الصغرى",
+            "type": "int",
+            "required": True,
+        },
+        {
+            "name": "shift_id",
+            "label": "الوردية المفتوحة ID (اختياري)",
+            "type": "int?",
+            "choice_values": svc.get_field_choices("shift_id"),
+        },
+        {
+            "name": "document_type",
+            "label": "نوع المستند المراد التوزيع عليه (اختياري)",
+            "choice_values": [
+                ("SALE", "SALE"),
+                ("PURCHASE_INVOICE", "PURCHASE_INVOICE"),
+            ],
+        },
+        {
+            "name": "document_id",
+            "label": "معرف المستند (اتركه فارغًا للدفع غير الموزع)",
+            "type": "int?",
+        },
+        {
+            "name": "allocated_amount",
+            "label": "المبلغ الموزع (اختياري)",
+            "type": "int?",
+        },
         {"name": "reference", "label": "مرجع التحويل/الإيصال"},
         {"name": "note", "label": "ملاحظة"},
     ]
 
     def submit(values):
+        direction = str(values["direction"]).strip()
+        partner_id = _optional_int(values, "partner_id")
+
+        if partner_id is None:
+            raise ValueError("يجب اختيار العميل أو المورد")
+
+        document_type = str(values.get("document_type") or "").strip()
+        document_id = _optional_int(values, "document_id")
+        allocated_amount = _optional_int(values, "allocated_amount")
+
         allocations = []
-        if values.get("document_id"):
-            if not values.get("allocated_amount"):
+
+        if document_id is not None:
+            if not document_type:
+                raise ValueError("اختر نوع المستند المراد التوزيع عليه")
+
+            if allocated_amount is None:
                 raise ValueError("أدخل مبلغ التوزيع عند تحديد مستند")
+
+            if allocated_amount <= 0:
+                raise ValueError("مبلغ التوزيع يجب أن يكون أكبر من صفر")
+
+            expected_type = (
+                "SALE" if direction == "IN" else "PURCHASE_INVOICE"
+            )
+
+            if document_type != expected_type:
+                raise ValueError(
+                    "نوع المستند لا يتوافق مع اتجاه الدفع. "
+                    "التحصيل من العميل يكون على فواتير البيع، "
+                    "والسداد للمورد يكون على فواتير الشراء."
+                )
+
             allocations.append({
-                "document_type": values["document_type"],
-                "document_id": int(values["document_id"]),
-                "amount": int(values["allocated_amount"]),
+                "document_type": document_type,
+                "document_id": document_id,
+                "amount": allocated_amount,
             })
-        elif values.get("allocated_amount"):
-            raise ValueError("أدخل معرف المستند أو اترك مبلغ التوزيع فارغًا")
+
+        elif document_type or allocated_amount is not None:
+            raise ValueError(
+                "أدخل معرف المستند أو اترك بيانات التوزيع فارغة"
+            )
+
         payment_id = svc.record_payment(
-            values["direction"], int(values["partner_id"]) if values.get("partner_id") else None,
-            int(values["method_id"]), int(values["amount"]), svc.get_username_id(username),
-            allocations, int(values["shift_id"]) if values.get("shift_id") else None,
-            values.get("reference", ""), values.get("note", ""),
+            direction=direction,
+            partner_id=partner_id,
+            method_id=int(values["method_id"]),
+            amount=int(values["amount"]),
+            user_id=svc.get_username_id(username),
+            allocations=allocations,
+            shift_id=_optional_int(values, "shift_id"),
+            reference=values.get("reference", ""),
+            note=values.get("note", ""),
         )
+
         refresh()
         _refresh_dashboard()
-        _message("info", "تم", f"تم تسجيل الدفع وإنشاء القيد المحاسبي. المعرف: {payment_id}", _root)
 
-    _prompt_form("تسجيل دفعة أو تحصيل", fields, submit,
-                 note="يمكن توزيع الدفع على مستند واحد في هذه الشاشة. أي مبلغ غير موزع يظل رصيدًا على حساب الشريك وفق منطق أرصدة النظام.")
+        _message(
+            "info",
+            "تم",
+            f"تم تسجيل الدفع وإنشاء القيد المحاسبي. المعرف: {payment_id}",
+            _root,
+        )
+
+    _prompt_form(
+        "تسجيل دفعة أو تحصيل",
+        fields,
+        submit,
+        note=(
+            "يجب ربط كل دفعة بعميل أو مورد. "
+            "يمكن توزيع الدفع على مستند واحد في هذه الشاشة. "
+            "أي مبلغ غير موزع يظل رصيدًا على حساب الشريك وفق منطق أرصدة النظام."
+        ),
+    )
 
 
 def _open_expense_form(refresh: Callable[[], None]):
@@ -1067,7 +1534,18 @@ def _resource_action_buttons(resource: str, toolbar: QHBoxLayout,
     colors = _appearance_colors()
 
     def add_action(label: str, func: Callable):
-        toolbar.addWidget(_button(_root, label, func, color=colors["accent"], hover=colors["accent_hover"], height=34))
+        parent = toolbar.parentWidget() or _root
+
+        toolbar.addWidget(
+            _button(
+                parent,
+                label,
+                func,
+                color=colors["accent"],
+                hover=colors["accent_hover"],
+                height=34,
+            )
+        )
 
     if resource in {"debt_log", "audit_log"}:
         add_action("عرض تفاصيل السجل", lambda: _open_audit_log_details(table, table.window(), svc.RESOURCE_CONFIG[resource]["columns"]))
@@ -1489,12 +1967,21 @@ def open_admin(root: QWidget):
 
     quick = QFrame(content)
     quick.setStyleSheet(f"background: {colors['card']}; border-radius: 10px;")
+
     quick_layout = QVBoxLayout(quick)
     quick_layout.setContentsMargins(12, 10, 12, 12)
-    quick_layout.addWidget(_label("إجراءات سريعة", quick, size=16, bold=True))
+    quick_layout.setSpacing(10)
+
+    quick_layout.addWidget(
+        _label("إجراءات سريعة", quick, size=16, bold=True)
+    )
+
     quick_row_widget = QWidget(quick)
-    quick_row = QHBoxLayout(quick_row_widget)
+    quick_row = QGridLayout(quick_row_widget)
     quick_row.setContentsMargins(0, 0, 0, 0)
+    quick_row.setHorizontalSpacing(8)
+    quick_row.setVerticalSpacing(8)
+
     quick_actions = [
         ("تسوية مخزون", lambda: _open_stock_adjustment(_refresh_dashboard)),
         ("تسجيل بيع", lambda: _open_sale_form(lambda: None)),
@@ -1502,12 +1989,22 @@ def open_admin(root: QWidget):
         ("تسجيل دفعة", lambda: _open_payment_form(lambda: None)),
         ("تسجيل مصروف", lambda: _open_expense_form(lambda: None)),
         ("قيد يومية", lambda: _open_journal_form(lambda: None)),
+        ("تصدير Excel", open_excel_export_window),
     ]
-    for label, command in quick_actions:
-        quick_row.addWidget(_button(quick_row_widget, label, command, height=36))
+
+    for index, (label, command) in enumerate(quick_actions):
+        quick_row.addWidget(
+            _button(quick_row_widget, label, command, height=36),
+            index // 4,
+            index % 4,
+        )
+
+    for column in range(4):
+        quick_row.setColumnStretch(column, 1)
+
     quick_layout.addWidget(quick_row_widget)
     content_layout.addWidget(quick)
-    content_layout.addStretch(1)
+
     content_area.setWidget(content)
     body_layout.addWidget(content_area, 1)
 

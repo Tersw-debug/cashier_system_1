@@ -598,11 +598,50 @@ def _save_row(c, resource, cooked, record_id):
         c.execute("INSERT INTO settings(`key`,value) VALUES(%s,%s) ON DUPLICATE KEY UPDATE value=VALUES(value),updated_at=CURRENT_TIMESTAMP", (key, cooked.get("value")))
         return key
     if resource == "doc_sequences":
-        name = cooked.get("name")
+        name = str(cooked.get("name") or "").strip()
+
+        if not name:
+            raise ValueError("اسم تسلسل المستند مطلوب")
+
         if record_id is None:
-            c.execute("INSERT INTO doc_sequences(name,prefix,next_number,padding) VALUES(%s,%s,%s,%s)", (name, cooked.get("prefix") or "", cooked.get("next_number",1), cooked.get("padding",6)))
+            c.execute(
+                """
+                INSERT INTO doc_sequences(
+                    name, prefix, next_number, padding
+                )
+                VALUES(%s, %s, %s, %s)
+                """,
+                (
+                    name,
+                    cooked.get("prefix") or "",
+                    cooked.get("next_number", 1),
+                    cooked.get("padding", 6),
+                ),
+            )
             return name
-        c.execute("UPDATE doc_sequences SET prefix=%s,next_number=%s,padding=%s WHERE name=%s", (cooked.get("prefix") or "", cooked.get("next_number",1), cooked.get("padding",6), record_id))
+
+        if name != str(record_id):
+            raise ValueError(
+                "لا يمكن تغيير اسم تسلسل المستند بعد إنشائه"
+            )
+
+        c.execute(
+            """
+            UPDATE doc_sequences
+            SET prefix=%s, next_number=%s, padding=%s
+            WHERE name=%s
+            """,
+            (
+                cooked.get("prefix") or "",
+                cooked.get("next_number", 1),
+                cooked.get("padding", 6),
+                record_id,
+            ),
+        )
+
+        if c.rowcount == 0:
+            raise ValueError("تسلسل المستند غير موجود")
+
         return record_id
     if resource == "users":
         password = str(cooked.pop("password", "") or "").strip()
@@ -1271,6 +1310,28 @@ def get_field_choices(field_name: str):
         return []
     return _fetch_all(mapping[field_name][0])
 
+def get_product_tax_rate_bp(product_id: int) -> int:
+    """Return the active tax rate configured for a product.
+
+    Returns zero when the product has no active tax rate.
+    """
+    row = _fetch_one(
+        """
+        SELECT COALESCE(t.rate_bp, 0)
+        FROM products AS p
+        LEFT JOIN tax_rates AS t
+            ON t.id = p.tax_rate_id
+            AND t.is_active = 1
+        WHERE p.id = %s
+        """,
+        (int(product_id),),
+    )
+
+    if row is None:
+        raise ValueError("المنتج غير موجود")
+
+    return int(row[0] or 0)
+
 
 def get_role_permissions(role_id: int):
     all_permissions = _fetch_all("SELECT id,code,COALESCE(description,'') FROM permissions ORDER BY code")
@@ -1293,3 +1354,407 @@ def set_role_permissions(role_id: int, permission_ids: list[int], user_id: int |
             c.execute("INSERT INTO role_permissions(role_id,permission_id) VALUES(%s,%s)", (role_id, permission_id))
         _audit(c, user_id, "UPDATE_PERMISSIONS", "roles", int(role_id), new_values={"permission_ids": sorted(set(int(x) for x in permission_ids))})
 
+
+"""Standalone Excel exports for selected MyShop admin datasets.
+
+Paste these functions into Services/admin_service.py, after _fetch_all().
+Each function owns its SQL query and workbook creation; there is no generic
+resource-export function and no dynamic SQL identifier selection.
+
+Runtime dependency: python -m pip install openpyxl
+"""
+
+
+def export_sales_excel(file_path: str | os.PathLike[str]) -> int:
+    """Export all sales and sales-return headers to an XLSX file.
+
+    Returns the number of exported rows. Raises on query or file errors.
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise RuntimeError("لتصدير Excel ثبّت المكتبة: python -m pip install openpyxl") from exc
+
+    rows = _fetch_all(
+        """
+        SELECT
+            s.id,
+            s.number,
+            s.sale_type,
+            COALESCE(p.name, 'عميل نقدي'),
+            w.name,
+            s.sold_at,
+            s.status,
+            s.subtotal,
+            s.tax_total,
+            s.discount,
+            s.total,
+            COALESCE((
+                SELECT SUM(a.amount)
+                FROM payment_allocations AS a
+                WHERE a.document_type = 'SALE' AND a.document_id = s.id
+            ), 0)
+        FROM sales AS s
+        LEFT JOIN partners AS p ON p.id = s.customer_id
+        JOIN warehouses AS w ON w.id = s.warehouse_id
+        ORDER BY s.id DESC
+        """
+    ) or []
+    columns = RESOURCE_CONFIG["sales"]["columns"]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "المبيعات"
+    sheet.sheet_view.rightToLeft = True
+    sheet.freeze_panes = "A2"
+    header_fill = PatternFill("solid", fgColor="1F6AA5")
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    row_fills = [PatternFill("solid", fgColor="F3F6FA"), PatternFill("solid", fgColor="FFFFFF")]
+    bottom_border = Border(bottom=Side(style="thin", color="D7DDE5"))
+
+    for col, heading in enumerate(columns, 1):
+        cell = sheet.cell(1, col, str(heading))
+        cell.fill, cell.font = header_fill, header_font
+        cell.alignment, cell.border = header_alignment, bottom_border
+    sheet.row_dimensions[1].height = 30
+
+    for row_no, source_row in enumerate(rows, 2):
+        values = list(source_row[:len(columns)])
+        values.extend([None] * (len(columns) - len(values)))
+        fill = row_fills[(row_no - 2) % 2]
+        for col, value in enumerate(values, 1):
+            cell = sheet.cell(row_no, col)
+            cell.value = value
+            if isinstance(value, str):
+                cell.data_type = "s"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if isinstance(value, datetime):
+                    cell.number_format = "yyyy-mm-dd hh:mm:ss"
+                elif isinstance(value, date):
+                    cell.number_format = "yyyy-mm-dd"
+            cell.fill = fill
+            cell.border = bottom_border
+
+    last_col = get_column_letter(len(columns))
+    sheet.auto_filter.ref = f"A1:{last_col}{max(1, len(rows) + 1)}"
+    for col, heading in enumerate(columns, 1):
+        longest = len(str(heading))
+        for source_row in rows:
+            value = source_row[col - 1] if col - 1 < len(source_row) else None
+            if value is not None:
+                longest = max(longest, len(str(value)))
+        sheet.column_dimensions[get_column_letter(col)].width = min(42, max(12, longest + 2))
+
+    workbook.save(file_path)
+    return len(rows)
+
+
+def export_storage_excel(file_path: str | os.PathLike[str]) -> int:
+    """Export current stock balances by product and warehouse to XLSX."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise RuntimeError("لتصدير Excel ثبّت المكتبة: python -m pip install openpyxl") from exc
+
+    rows = _fetch_all(
+        """
+        SELECT sl.product_id, p.name, sl.warehouse_id, w.name, sl.quantity
+        FROM stock_levels AS sl
+        JOIN products AS p ON p.id = sl.product_id
+        JOIN warehouses AS w ON w.id = sl.warehouse_id
+        ORDER BY p.name, w.name
+        """
+    ) or []
+    columns = RESOURCE_CONFIG["stock_levels"]["columns"]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "أرصدة المخزون"
+    sheet.sheet_view.rightToLeft = True
+    sheet.freeze_panes = "A2"
+    header_fill = PatternFill("solid", fgColor="1F6AA5")
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    row_fills = [PatternFill("solid", fgColor="F3F6FA"), PatternFill("solid", fgColor="FFFFFF")]
+    bottom_border = Border(bottom=Side(style="thin", color="D7DDE5"))
+
+    for col, heading in enumerate(columns, 1):
+        cell = sheet.cell(1, col, str(heading))
+        cell.fill, cell.font = header_fill, header_font
+        cell.alignment, cell.border = header_alignment, bottom_border
+    sheet.row_dimensions[1].height = 30
+
+    for row_no, source_row in enumerate(rows, 2):
+        values = list(source_row[:len(columns)])
+        values.extend([None] * (len(columns) - len(values)))
+        fill = row_fills[(row_no - 2) % 2]
+        for col, value in enumerate(values, 1):
+            cell = sheet.cell(row_no, col)
+            cell.value = value
+            if isinstance(value, str):
+                cell.data_type = "s"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if isinstance(value, datetime):
+                    cell.number_format = "yyyy-mm-dd hh:mm:ss"
+                elif isinstance(value, date):
+                    cell.number_format = "yyyy-mm-dd"
+            cell.fill = fill
+            cell.border = bottom_border
+
+    last_col = get_column_letter(len(columns))
+    sheet.auto_filter.ref = f"A1:{last_col}{max(1, len(rows) + 1)}"
+    for col, heading in enumerate(columns, 1):
+        longest = len(str(heading))
+        for source_row in rows:
+            value = source_row[col - 1] if col - 1 < len(source_row) else None
+            if value is not None:
+                longest = max(longest, len(str(value)))
+        sheet.column_dimensions[get_column_letter(col)].width = min(42, max(12, longest + 2))
+
+    workbook.save(file_path)
+    return len(rows)
+
+
+def export_debts_excel(file_path: str | os.PathLike[str]) -> int:
+    """Export debt-related audit events, including old/new JSON values."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise RuntimeError("لتصدير Excel ثبّت المكتبة: python -m pip install openpyxl") from exc
+
+    rows = _fetch_all(
+        """
+        SELECT
+            a.id,
+            a.created_at,
+            a.user_id,
+            COALESCE(u.username, ''),
+            a.action,
+            COALESCE(a.entity, ''),
+            COALESCE(CAST(a.entity_id AS CHAR), ''),
+            COALESCE(a.old_values, ''),
+            COALESCE(a.new_values, ''),
+            COALESCE(a.note, '')
+        FROM audit_log AS a
+        LEFT JOIN users AS u ON u.id = a.user_id
+        WHERE a.action LIKE 'DEBT%'
+        ORDER BY a.id DESC
+        """
+    ) or []
+    columns = RESOURCE_CONFIG["debt_log"]["columns"]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "سجل حركة الديون"
+    sheet.sheet_view.rightToLeft = True
+    sheet.freeze_panes = "A2"
+    header_fill = PatternFill("solid", fgColor="1F6AA5")
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    row_fills = [PatternFill("solid", fgColor="F3F6FA"), PatternFill("solid", fgColor="FFFFFF")]
+    bottom_border = Border(bottom=Side(style="thin", color="D7DDE5"))
+
+    for col, heading in enumerate(columns, 1):
+        cell = sheet.cell(1, col, str(heading))
+        cell.fill, cell.font = header_fill, header_font
+        cell.alignment, cell.border = header_alignment, bottom_border
+    sheet.row_dimensions[1].height = 30
+
+    for row_no, source_row in enumerate(rows, 2):
+        values = list(source_row[:len(columns)])
+        values.extend([None] * (len(columns) - len(values)))
+        fill = row_fills[(row_no - 2) % 2]
+        for col, value in enumerate(values, 1):
+            cell = sheet.cell(row_no, col)
+            cell.value = value
+            if isinstance(value, str):
+                cell.data_type = "s"
+                cell.alignment = Alignment(horizontal="right", vertical="center", wrap_text=(col in (8, 9, 10)))
+            else:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = fill
+            cell.border = bottom_border
+
+    last_col = get_column_letter(len(columns))
+    sheet.auto_filter.ref = f"A1:{last_col}{max(1, len(rows) + 1)}"
+    for col, heading in enumerate(columns, 1):
+        longest = len(str(heading))
+        for source_row in rows:
+            value = source_row[col - 1] if col - 1 < len(source_row) else None
+            if value is not None and col not in (8, 9, 10):
+                longest = max(longest, len(str(value)))
+        sheet.column_dimensions[get_column_letter(col)].width = min(42, max(12, longest + 2))
+    for col in (8, 9, 10):
+        sheet.column_dimensions[get_column_letter(col)].width = 38
+
+    workbook.save(file_path)
+    return len(rows)
+
+
+def export_stock_movements_excel(file_path: str | os.PathLike[str]) -> int:
+    """Export the complete stock-movement ledger to XLSX."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise RuntimeError("لتصدير Excel ثبّت المكتبة: python -m pip install openpyxl") from exc
+
+    rows = _fetch_all(
+        """
+        SELECT
+            sm.id,
+            sm.created_at,
+            p.name,
+            w.name,
+            sm.movement_type,
+            sm.quantity_change,
+            COALESCE(sm.unit_cost, ''),
+            COALESCE(sm.reference_type, ''),
+            COALESCE(sm.reference_id, ''),
+            COALESCE(sm.note, '')
+        FROM stock_movements AS sm
+        JOIN products AS p ON p.id = sm.product_id
+        JOIN warehouses AS w ON w.id = sm.warehouse_id
+        ORDER BY sm.id DESC
+        """
+    ) or []
+    columns = RESOURCE_CONFIG["stock_movements"]["columns"]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "حركة المخزون"
+    sheet.sheet_view.rightToLeft = True
+    sheet.freeze_panes = "A2"
+    header_fill = PatternFill("solid", fgColor="1F6AA5")
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    row_fills = [PatternFill("solid", fgColor="F3F6FA"), PatternFill("solid", fgColor="FFFFFF")]
+    bottom_border = Border(bottom=Side(style="thin", color="D7DDE5"))
+
+    for col, heading in enumerate(columns, 1):
+        cell = sheet.cell(1, col, str(heading))
+        cell.fill, cell.font = header_fill, header_font
+        cell.alignment, cell.border = header_alignment, bottom_border
+    sheet.row_dimensions[1].height = 30
+
+    for row_no, source_row in enumerate(rows, 2):
+        values = list(source_row[:len(columns)])
+        values.extend([None] * (len(columns) - len(values)))
+        fill = row_fills[(row_no - 2) % 2]
+        for col, value in enumerate(values, 1):
+            cell = sheet.cell(row_no, col)
+            cell.value = value
+            if isinstance(value, str):
+                cell.data_type = "s"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if isinstance(value, datetime):
+                    cell.number_format = "yyyy-mm-dd hh:mm:ss"
+                elif isinstance(value, date):
+                    cell.number_format = "yyyy-mm-dd"
+            cell.fill = fill
+            cell.border = bottom_border
+
+    last_col = get_column_letter(len(columns))
+    sheet.auto_filter.ref = f"A1:{last_col}{max(1, len(rows) + 1)}"
+    for col, heading in enumerate(columns, 1):
+        longest = len(str(heading))
+        for source_row in rows:
+            value = source_row[col - 1] if col - 1 < len(source_row) else None
+            if value is not None:
+                longest = max(longest, len(str(value)))
+        sheet.column_dimensions[get_column_letter(col)].width = min(42, max(12, longest + 2))
+
+    workbook.save(file_path)
+    return len(rows)
+
+
+def export_shifts_excel(file_path: str | os.PathLike[str]) -> int:
+    """Export cash-shift opening and closing records to XLSX."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise RuntimeError("لتصدير Excel ثبّت المكتبة: python -m pip install openpyxl") from exc
+
+    rows = _fetch_all(
+        """
+        SELECT
+            cs.id,
+            u.username,
+            cs.opened_at,
+            COALESCE(cs.closed_at, ''),
+            cs.opening_cash,
+            COALESCE(cs.closing_cash, ''),
+            COALESCE(cs.expected_cash, ''),
+            cs.status,
+            COALESCE(cs.note, '')
+        FROM cash_shifts AS cs
+        JOIN users AS u ON u.id = cs.user_id
+        ORDER BY cs.id DESC
+        """
+    ) or []
+    columns = RESOURCE_CONFIG["cash_shifts"]["columns"]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "ورديات الخزينة"
+    sheet.sheet_view.rightToLeft = True
+    sheet.freeze_panes = "A2"
+    header_fill = PatternFill("solid", fgColor="1F6AA5")
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    row_fills = [PatternFill("solid", fgColor="F3F6FA"), PatternFill("solid", fgColor="FFFFFF")]
+    bottom_border = Border(bottom=Side(style="thin", color="D7DDE5"))
+
+    for col, heading in enumerate(columns, 1):
+        cell = sheet.cell(1, col, str(heading))
+        cell.fill, cell.font = header_fill, header_font
+        cell.alignment, cell.border = header_alignment, bottom_border
+    sheet.row_dimensions[1].height = 30
+
+    for row_no, source_row in enumerate(rows, 2):
+        values = list(source_row[:len(columns)])
+        values.extend([None] * (len(columns) - len(values)))
+        fill = row_fills[(row_no - 2) % 2]
+        for col, value in enumerate(values, 1):
+            cell = sheet.cell(row_no, col)
+            cell.value = value
+            if isinstance(value, str):
+                cell.data_type = "s"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if isinstance(value, datetime):
+                    cell.number_format = "yyyy-mm-dd hh:mm:ss"
+                elif isinstance(value, date):
+                    cell.number_format = "yyyy-mm-dd"
+            cell.fill = fill
+            cell.border = bottom_border
+
+    last_col = get_column_letter(len(columns))
+    sheet.auto_filter.ref = f"A1:{last_col}{max(1, len(rows) + 1)}"
+    for col, heading in enumerate(columns, 1):
+        longest = len(str(heading))
+        for source_row in rows:
+            value = source_row[col - 1] if col - 1 < len(source_row) else None
+            if value is not None:
+                longest = max(longest, len(str(value)))
+        sheet.column_dimensions[get_column_letter(col)].width = min(42, max(12, longest + 2))
+
+    workbook.save(file_path)
+    return len(rows)
