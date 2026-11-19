@@ -32,6 +32,6 @@ def go_admin(root: QMainWindow):
 
 def go_cashier(root: QMainWindow, username: str):
     _validate_main_window(root)
-    from UI.sell_ui import build_sell_ui
+    from UI.ui_cashier import open_cashier
 
-    return build_sell_ui(root, username)
+    return open_cashier(root, username)

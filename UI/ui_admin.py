@@ -93,7 +93,7 @@ def _button(parent: QWidget, text: str, callback: Callable | None = None,
 
 def _label(text: str, parent: QWidget | None = None, *, size: int = 10,
            bold: bool = False, color: str | None = None,
-           align: Qt.AlignmentFlag = Qt.AlignRight | Qt.AlignVCenter,
+           align: Qt.AlignmentFlag = Qt.AlignLeft | Qt.AlignVCenter,
            wrap: bool = False) -> QLabel:
     colors = _appearance_colors()
     result = QLabel(text, parent)
@@ -118,6 +118,58 @@ def _line_edit(parent: QWidget, value: str = "", placeholder: str = "") -> QLine
     )
     return edit
 
+
+def _style_combo(combo: QComboBox) -> QComboBox:
+    """Apply the same accent theme used by the dashboard buttons."""
+    colors = _appearance_colors()
+
+    combo.setMinimumHeight(34)
+    combo.setStyleSheet(
+        f"""
+        QComboBox {{
+            background-color: {colors['accent']};
+            color: white;
+            border: 0;
+            border-radius: 7px;
+            padding: 6px 10px;
+            font-weight: 600;
+        }}
+
+        QComboBox:hover {{
+            background-color: {colors['accent_hover']};
+        }}
+
+        QComboBox::drop-down {{
+            border: 0;
+            width: 28px;
+        }}
+
+        QComboBox QAbstractItemView {{
+            background-color: {colors['accent']};
+            color: white;
+            border: 1px solid {colors['border']};
+            outline: 0;
+            selection-background-color: {colors['accent_hover']};
+            selection-color: white;
+        }}
+
+        QComboBox QAbstractItemView::item {{
+            padding: 7px 10px;
+            min-height: 26px;
+        }}
+
+        QComboBox QAbstractItemView::item:hover {{
+            background-color: {colors['accent_hover']};
+            color: white;
+        }}
+
+        QComboBox QAbstractItemView::item:selected {{
+            background-color: {colors['accent_hover']};
+            color: white;
+        }}
+        """
+    )
+    return combo
 
 def _message(kind: str, title: str, message: str, parent: QWidget | None = None) -> None:
     box = QMessageBox(parent)
@@ -305,8 +357,7 @@ def _make_choice_widget(parent: QWidget, field: dict, current: Any):
         choices = svc.get_field_choices(name)
 
     if choices:
-        combo = QComboBox(parent)
-        combo.setMinimumHeight(34)
+        combo = _style_combo(QComboBox(parent))
         combo.addItem("", "")
         for value, label in choices:
             combo.addItem(f"{value} — {label}", value)
@@ -377,7 +428,7 @@ def _prompt_form(title: str, fields: list[dict], on_submit: Callable[[dict], Any
     form.setContentsMargins(14, 12, 14, 12)
     form.setHorizontalSpacing(12)
     form.setVerticalSpacing(9)
-    form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     form.setFormAlignment(Qt.AlignTop)
 
     widgets: dict[str, QWidget] = {}
@@ -956,8 +1007,7 @@ def _open_role_permissions():
     win.setStyleSheet(f"QDialog {{ background: {colors['bg']}; color: {colors['text']}; }}")
     layout = QVBoxLayout(win)
     layout.addWidget(_label("إدارة صلاحيات الدور", win, size=20, bold=True))
-    role_combo = QComboBox(win)
-    role_combo.setMinimumHeight(36)
+    role_combo = _style_combo(QComboBox(win))
     for role_id, name in roles:
         role_combo.addItem(f"{role_id} — {name}", role_id)
     layout.addWidget(role_combo)
@@ -1381,7 +1431,7 @@ def open_admin(root: QWidget):
             button.setCursor(Qt.PointingHandCursor)
             button.setLayoutDirection(Qt.RightToLeft)
             button.setStyleSheet(
-                f"QPushButton {{ text-align: right; color: {colors['text']}; background: transparent; border: 0; padding: 5px 8px; }}"
+                f"QPushButton {{ text-align: left; color: {colors['text']}; background: transparent; border: 0; padding: 5px 8px; }}"
                 f"QPushButton:hover {{ background: {colors['border']}; border-radius: 5px; }}"
             )
             button.clicked.connect(lambda _checked=False, r=resource: open_resource_window(r))
@@ -1424,7 +1474,7 @@ def open_admin(root: QWidget):
     stat_labels: dict[str, QLabel] = {}
     for index, (key, title, resource) in enumerate(stats_config):
         card = QFrame(cards_frame)
-        card.setStyleSheet(f"background: {colors['card']}; border: 1px solid {colors['border']}; border-radius: 10px;")
+        card.setStyleSheet(f"background: {colors['card']};  border-radius: 10px;")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(12, 10, 12, 10)
         card_layout.addWidget(_label(title, card, size=10, color=colors["subtext"], wrap=True))

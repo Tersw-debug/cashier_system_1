@@ -30,11 +30,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
+from Domain.debt import _DebtTableModel
+from Domain.cart import _CartTableModel, _line_totals, _qty_text
 from UI.common import is_dark
 from Services.cashier_service import (
     add_customer_debt,
@@ -46,6 +49,7 @@ from Services.cashier_service import (
     get_cashier_context,
     get_cashier_product_groups,
     get_cashier_products,
+    search_cashier_products,
     get_debt_customers,
     get_open_shift,
     get_returnable_sales_items,
@@ -92,17 +96,7 @@ def _quantity(value: Any) -> Decimal:
     return quantity
 
 
-def _qty_text(value: Any) -> str:
-    return f"{value.normalize():f}" if isinstance(value, Decimal) else str(value)
 
-
-def _line_totals(product: tuple, quantity: Decimal) -> tuple[int, int, int]:
-    """Return base, tax, and total using integer minor currency units."""
-    price_minor = int(product[4])
-    tax_bp = int(product[9] or 0)
-    base = int((quantity * Decimal(price_minor)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    tax = int((Decimal(base) * Decimal(tax_bp) / Decimal(10000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    return base, tax, base + tax
 
 
 def _ui_palette(dark: bool) -> dict[str, str]:
@@ -129,143 +123,9 @@ def _ui_palette(dark: bool) -> dict[str, str]:
 
 
 
-class _CartTableModel(QAbstractTableModel):
-    """Model for the sale cart; row identity is the product ID, not row number."""
-
-    HEADERS = ("الصنف", "الباركود", "سعر الوحدة", "الكمية", "الإجمالي", "المتاح")
-
-    def __init__(self, cart: dict[int, dict[str, Any]], parent: QWidget | None = None):
-        super().__init__(parent)
-        self._cart = cart
-        self._product_ids: list[int] = list(cart)
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-        return 0 if parent.isValid() else len(self._product_ids)
-
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-        return 0 if parent.isValid() else len(self.HEADERS)
-
-    def headerData(self, section: int, orientation: Qt.Orientation,
-                   role: int = Qt.ItemDataRole.DisplayRole):  # noqa: N802
-        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
-            if 0 <= section < len(self.HEADERS):
-                return self.HEADERS[section]
-        if role == Qt.ItemDataRole.TextAlignmentRole and orientation == Qt.Orientation.Horizontal:
-            return int(Qt.AlignmentFlag.AlignCenter)
-        return None
-
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or not (0 <= index.row() < len(self._product_ids)):
-            return None
-
-        product_id = self._product_ids[index.row()]
-        entry = self._cart.get(product_id)
-        if entry is None:
-            return None
-
-        if role == Qt.ItemDataRole.UserRole:
-            return product_id
-
-        if role == Qt.ItemDataRole.TextAlignmentRole:
-            alignment = (
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                if index.column() == 0 else
-                Qt.AlignmentFlag.AlignCenter
-            )
-            return int(alignment)
-
-        if role != Qt.ItemDataRole.DisplayRole:
-            return None
-
-        product = entry["product"]
-        quantity = entry["quantity"]
-        _base, _tax, line_total = _line_totals(product, quantity)
-        stock_text = f"{float(product[5]):g}" if bool(product[7]) else "—"
-        values = (
-            str(product[1]),
-            str(product[3] or ""),
-            minor_to_money(product[4]),
-            _qty_text(quantity),
-            minor_to_money(line_total),
-            stock_text,
-        )
-        return values[index.column()]
-
-    def refresh(self) -> None:
-        self.beginResetModel()
-        self._product_ids = list(self._cart)
-        self.endResetModel()
-
-    def product_id_at(self, row: int) -> int | None:
-        if 0 <= row < len(self._product_ids):
-            return self._product_ids[row]
-        return None
-
-    def row_for_product(self, product_id: int) -> int:
-        try:
-            return self._product_ids.index(int(product_id))
-        except ValueError:
-            return -1
 
 
-class _DebtTableModel(QAbstractTableModel):
-    """Source model for debtors; the proxy model handles interactive filtering."""
 
-    HEADERS = ("الرقم", "العميل", "الهاتف", "الدين الحالي")
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self._records: list[tuple[int, str, str, int]] = []
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-        return 0 if parent.isValid() else len(self._records)
-
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-        return 0 if parent.isValid() else len(self.HEADERS)
-
-    def headerData(self, section: int, orientation: Qt.Orientation,
-                   role: int = Qt.ItemDataRole.DisplayRole):  # noqa: N802
-        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
-            if 0 <= section < len(self.HEADERS):
-                return self.HEADERS[section]
-        if role == Qt.ItemDataRole.TextAlignmentRole and orientation == Qt.Orientation.Horizontal:
-            return int(Qt.AlignmentFlag.AlignCenter)
-        return None
-
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or not (0 <= index.row() < len(self._records)):
-            return None
-
-        record = self._records[index.row()]
-        customer_id, name, phone, debt_minor = record
-
-        if role == Qt.ItemDataRole.UserRole:
-            return customer_id
-        if role == Qt.ItemDataRole.UserRole + 1:
-            # Numeric sort values, should sorting be enabled by the UI later.
-            return (customer_id, name.casefold(), phone.casefold(), debt_minor)[index.column()]
-        if role == Qt.ItemDataRole.TextAlignmentRole:
-            return int(Qt.AlignmentFlag.AlignCenter)
-        if role != Qt.ItemDataRole.DisplayRole:
-            return None
-
-        return (
-            str(customer_id),
-            name,
-            phone,
-            minor_to_money(debt_minor),
-        )[index.column()]
-
-    def set_records(self, records: list[tuple[int, str, str, int]]) -> None:
-        self.beginResetModel()
-        self._records = list(records)
-        self.endResetModel()
-
-    def record_at(self, row: int) -> tuple[int, str, int] | None:
-        if not (0 <= row < len(self._records)):
-            return None
-        customer_id, name, _phone, debt_minor = self._records[row]
-        return customer_id, name, debt_minor
 
 
 def _configure_table_view(view: QTableView, palette: dict[str, str],
@@ -320,6 +180,7 @@ def _make_button(parent: QWidget, label: str, command: Callable | None = None,
     }
     foreground, hover = color_map.get(kind, color_map["neutral"])
     button = QPushButton(label, parent)
+    button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     button.setCursor(Qt.PointingHandCursor)
     button.setMinimumHeight(height)
     if width is not None:
@@ -343,6 +204,9 @@ def _make_label(parent: QWidget, text: str, palette: dict[str, str],
                 color: str | None = None, wrap: bool = False,
                 align: Qt.AlignmentFlag = Qt.AlignRight | Qt.AlignVCenter) -> QLabel:
     label = QLabel(text, parent)
+    label.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    # Let the label fill its layout cell so right alignment is visible.
+    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     label.setAlignment(align)
     label.setWordWrap(wrap)
     label.setFont(QFont("Segoe UI", size, QFont.Bold if bold else QFont.Normal))
@@ -351,7 +215,8 @@ def _make_label(parent: QWidget, text: str, palette: dict[str, str],
 
 
 def _style_line_edit(edit: QLineEdit, palette: dict[str, str], *, height: int = 38,
-                     align: Qt.AlignmentFlag = Qt.AlignRight) -> QLineEdit:
+                     align: Qt.AlignmentFlag = Qt.AlignLeft) -> QLineEdit:
+    edit.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     edit.setMinimumHeight(height)
     edit.setAlignment(align)
     edit.setFont(QFont("Segoe UI", 10))
@@ -364,7 +229,9 @@ def _style_line_edit(edit: QLineEdit, palette: dict[str, str], *, height: int = 
 
 
 def _style_combo(combo: QComboBox, palette: dict[str, str], height: int = 38) -> QComboBox:
+    combo.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     combo.setMinimumHeight(height)
+    combo.view().setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     combo.setStyleSheet(
         f"QComboBox {{ background: {palette['input']}; color: {palette['text']}; "
         f"border: 1px solid {palette['border']}; border-radius: 8px; padding: 5px 8px; }}"
@@ -388,11 +255,14 @@ def _message(kind: str, title: str, message: str, parent: QWidget | None = None)
 
 
 def _ask_yes_no(title: str, message: str, parent: QWidget | None = None) -> bool:
-    return QMessageBox.question(
-        parent, title, message,
-        QMessageBox.Yes | QMessageBox.No,
-        QMessageBox.No,
-    ) == QMessageBox.Yes
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(str(message))
+    box.setIcon(QMessageBox.Question)
+    box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+    box.setDefaultButton(QMessageBox.No)
+    box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    return box.exec() == QMessageBox.Yes
 
 
 def _clear_layout(layout: QVBoxLayout | QHBoxLayout | QGridLayout) -> None:
@@ -578,17 +448,35 @@ def build_sell_ui(parent: QWidget, username: str):
 
     # Checkout panel is the right-most panel in the RTL layout.
     controls = QFrame(content)
-    controls.setFixedWidth(330)
-    controls.setStyleSheet(f"background: {palette['surface']}; border-radius: 14px;")
+    controls.setObjectName("checkoutPanel")
+    controls.setFixedWidth(250)
+    controls.setStyleSheet(f"""
+        QFrame#checkoutPanel {{
+            background-color: {palette['surface']};
+            border: none;
+            border-radius: 18px;
+        }}
+    """)
     controls_layout = QVBoxLayout(controls)
     controls_layout.setContentsMargins(0, 0, 0, 0)
     controls_scroll = QScrollArea(controls)
     controls_scroll.setWidgetResizable(True)
     controls_scroll.setFrameShape(QFrame.NoFrame)
+    controls_scroll.setStyleSheet("""
+        QScrollArea {
+            background: transparent;
+            border: none;
+        }
+    """)
+
+    controls_scroll.viewport().setStyleSheet("""
+        background: transparent;
+    """)
     controls_body = QWidget()
+    controls_body.setStyleSheet("background: transparent;")
     controls_body.setLayoutDirection(Qt.RightToLeft)
     controls_body_layout = QVBoxLayout(controls_body)
-    controls_body_layout.setContentsMargins(0, 0, 0, 0)
+    controls_body_layout.setContentsMargins(8, 8, 8, 8)
     controls_body_layout.setSpacing(5)
     controls_scroll.setWidget(controls_body)
     controls_layout.addWidget(controls_scroll)
@@ -602,13 +490,13 @@ def build_sell_ui(parent: QWidget, username: str):
     content_layout.addWidget(center, 1)
 
     quick = QFrame(content)
-    quick.setFixedWidth(252)
+    quick.setFixedWidth(270)
     quick.setStyleSheet(f"background: {palette['surface']}; border-radius: 14px;")
     quick_layout = QVBoxLayout(quick)
     quick_layout.setContentsMargins(10, 12, 10, 8)
     quick_layout.setSpacing(4)
-    quick_layout.addWidget(_make_label(quick, "الأصناف السريعة", palette, size=14, bold=True))
-    quick_layout.addWidget(_make_label(quick, "اختر الصنف لإضافته إلى السلة", palette, size=9, color=palette["muted"]))
+    quick_layout.addWidget(_make_label(quick, "الأصناف السريعة", palette,align=Qt.AlignmentFlag.AlignLeft , size=14, bold=True))
+    quick_layout.addWidget(_make_label(quick, "اختر الصنف لإضافته إلى السلة", palette, align=Qt.AlignmentFlag.AlignLeft, size=9, color=palette["muted"]))
     separator = QFrame(quick)
     separator.setFixedHeight(1)
     separator.setStyleSheet(f"background: {palette['border']};")
@@ -642,7 +530,7 @@ def build_sell_ui(parent: QWidget, username: str):
     search_entry.setPlaceholderText("امسح الباركود أو ابحث باسم المنتج / SKU")
     search_entry.setFont(QFont("Segoe UI", 11))
     search_layout.addWidget(search_entry, 1)
-    add_button = _make_button(search_frame, "إضافة للسلة", kind="primary", palette=palette, width=104, height=42)
+    add_button = _make_button(search_frame, "بحث عن صنف", kind="primary", palette=palette, width=112, height=42)
     search_layout.addWidget(add_button)
     center_layout.addWidget(search_frame)
 
@@ -667,8 +555,8 @@ def build_sell_ui(parent: QWidget, username: str):
     center_layout.addWidget(cart_actions)
 
     # ---------------- checkout controls ----------------
-    controls_body_layout.addWidget(_make_label(controls_body, "إتمام البيع", palette, size=16, bold=True))
-    controls_body_layout.addWidget(_make_label(controls_body, "العميل", palette, size=10, bold=True))
+    controls_body_layout.addWidget(_make_label(controls_body, "إتمام البيع", palette, align=Qt.AlignmentFlag.AlignLeft ,size=16, bold=True))
+    controls_body_layout.addWidget(_make_label(controls_body, "العميل", palette, align=Qt.AlignmentFlag.AlignLeft ,size=10, bold=True))
     customer_menu = _style_combo(QComboBox(controls_body), palette)
 
     def rebuild_customer_combo(select_label: str = WALK_IN_LABEL):
@@ -701,25 +589,25 @@ def build_sell_ui(parent: QWidget, username: str):
     new_customer_layout = QVBoxLayout(new_customer_frame)
     new_customer_layout.setContentsMargins(11, 9, 11, 9)
     new_customer_layout.setSpacing(4)
-    new_customer_layout.addWidget(_make_label(new_customer_frame, "اسم العميل *", palette, size=10, bold=True))
+    new_customer_layout.addWidget(_make_label(new_customer_frame, "اسم العميل *", palette, align=Qt.AlignmentFlag.AlignLeft , size=10, bold=True))
     new_customer_name = _style_line_edit(QLineEdit(new_customer_frame), palette, height=37)
     new_customer_name.setPlaceholderText("اكتب اسم العميل")
     new_customer_layout.addWidget(new_customer_name)
-    new_customer_layout.addWidget(_make_label(new_customer_frame, "رقم الهاتف (اختياري)", palette, size=10, bold=True))
+    new_customer_layout.addWidget(_make_label(new_customer_frame, "رقم الهاتف (اختياري)", palette, align=Qt.AlignmentFlag.AlignLeft , size=10, bold=True))
     new_customer_phone = _style_line_edit(QLineEdit(new_customer_frame), palette, height=37)
     new_customer_phone.setPlaceholderText("اكتب رقم الهاتف")
     new_customer_layout.addWidget(new_customer_phone)
     controls_body_layout.addWidget(new_customer_frame)
     new_customer_frame.hide()
 
-    payment_label = _make_label(controls_body, "طريقة الدفع", palette, size=10, bold=True)
+    payment_label = _make_label(controls_body, "طريقة الدفع", palette, align=Qt.AlignmentFlag.AlignLeft ,size=10, bold=True)
     controls_body_layout.addWidget(payment_label)
     payment_menu = _style_combo(QComboBox(controls_body), palette)
     for method_label, method_id in method_labels.items():
         payment_menu.addItem(method_label, method_id)
     controls_body_layout.addWidget(payment_menu)
 
-    controls_body_layout.addWidget(_make_label(controls_body, "المبلغ المدفوع", palette, size=10, bold=True))
+    controls_body_layout.addWidget(_make_label(controls_body, "المبلغ المدفوع", palette, align=Qt.AlignmentFlag.AlignLeft ,size=10, bold=True))
     paid_entry = _style_line_edit(QLineEdit(controls_body), palette, height=38, align=Qt.AlignCenter)
     paid_entry.setText("0")
     paid_entry.setFont(QFont("Segoe UI", 12, QFont.Bold))
@@ -730,7 +618,7 @@ def build_sell_ui(parent: QWidget, username: str):
     summary_card.setStyleSheet(f"background: {palette['surface_alt']}; border-radius: 11px;")
     summary_layout = QVBoxLayout(summary_card)
     summary_layout.setContentsMargins(13, 10, 13, 10)
-    summary_layout.addWidget(_make_label(summary_card, "إجمالي الفاتورة", palette, size=10, bold=True, color=palette["muted"]))
+    summary_layout.addWidget(_make_label(summary_card, "إجمالي الفاتورة", palette, align=Qt.AlignmentFlag.AlignLeft ,size=10, bold=True, color=palette["muted"]))
     total_label = _make_label(summary_card, minor_to_money(0), palette, size=23, bold=True,
                               color="#48D6A0" if dark else palette["success"])
     summary_layout.addWidget(total_label)
@@ -854,35 +742,82 @@ def build_sell_ui(parent: QWidget, username: str):
         search_entry.clear()
         search_entry.setFocus()
 
-    def choose_product(products: list[tuple]):
-        if len(products) == 1:
-            ask_product_quantity(products[0])
-            return
-        picker = _new_dialog(top, "اختر الصنف", palette, (560, 400))
+    def show_product_search_dialog(primary: tuple | None, related: list[tuple]):
+        """Show the closest product (when one exists) and its name-related products."""
+        total_results = len(related) + (1 if primary is not None else 0)
+        picker = _new_dialog(top, "نتائج البحث عن صنف", palette, (640, 500))
         layout = QVBoxLayout(picker)
-        layout.addWidget(_make_label(picker, f"نتائج البحث: {len(products)}", palette, size=15, bold=True))
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        if primary is not None:
+            heading_text = "تم العثور على أقرب صنف مطابق"
+        else:
+            heading_text = f"أصناف ذات صلة بالبحث ({total_results})"
+        layout.addWidget(_make_label(picker, heading_text, palette, size=15, bold=True))
+
         scroll = QScrollArea(picker)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         body = QWidget()
+        body.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         body_layout = QVBoxLayout(body)
-        body_layout.setAlignment(Qt.AlignTop)
-        for product in products:
-            label = (
-                f"{product[1]} | {product[3] or product[2] or '-'} | "
-                f"{minor_to_money(product[4])} | مخزون {float(product[5]):g}"
-            )
-            button = _make_button(body, label, kind="neutral", palette=palette, height=40)
-            button.setStyleSheet(button.styleSheet() + " QPushButton { text-align: right; }")
-            button.clicked.connect(lambda _checked=False, p=product: select_from_picker(p))
-            body_layout.addWidget(button)
-        scroll.setWidget(body)
-        layout.addWidget(scroll, 1)
+        body_layout.setContentsMargins(2, 2, 2, 2)
+        body_layout.setSpacing(7)
+        body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        def select_from_picker(product):
+        def add_product_option(product: tuple, *, closest: bool = False) -> None:
+            product_name = str(product[1] or "بدون اسم")
+            code = str(product[3] or product[2] or "—")
+            stock = float(product[5] or 0) if len(product) > 5 else 0.0
+            label = (
+                f"{product_name}   |   {code}   |   "
+                f"{minor_to_money(product[4])}   |   المخزون: {stock:g}"
+            )
+            button = _make_button(
+                body,
+                label,
+                kind="success" if closest else "neutral",
+                palette=palette,
+                height=48,
+                font_size=10,
+            )
+            button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setStyleSheet(
+                button.styleSheet()
+                + " QPushButton { text-align: right; padding-right: 12px; }"
+            )
+            button.clicked.connect(
+                lambda _checked=False, selected=product: select_from_picker(selected)
+            )
+            body_layout.addWidget(button)
+
+        def select_from_picker(product: tuple) -> None:
             picker.accept()
             ask_product_quantity(product)
 
+        if primary is not None:
+            body_layout.addWidget(_make_label(body, "الصنف الأقرب", palette, size=11, bold=True))
+            add_product_option(primary, closest=True)
+
+        if related:
+            related_heading = "أصناف مشابهة في الاسم" if primary is not None else "الأصناف ذات الصلة"
+            body_layout.addWidget(_make_label(body, related_heading, palette, size=11, bold=True))
+            for product in related:
+                add_product_option(product)
+        elif primary is not None:
+            body_layout.addWidget(
+                _make_label(body, "لا توجد أصناف أخرى بأسماء مشابهة.", palette, size=9, color=palette["muted"])
+            )
+
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+
+        cancel_button = _make_button(picker, "إغلاق", kind="neutral", palette=palette, width=100)
+        cancel_button.clicked.connect(picker.reject)
+        layout.addWidget(cancel_button, 0, Qt.AlignmentFlag.AlignLeft)
         picker.exec()
 
     def search_and_add():
@@ -890,15 +825,16 @@ def build_sell_ui(parent: QWidget, username: str):
         if not value:
             return
         try:
-            products = get_cashier_products(value, current_warehouse_id())
+            primary, related = search_cashier_products(value, current_warehouse_id())
         except Exception as exc:
-            _message("error", "خطأ", str(exc), top)
+            _message("error", "خطأ في البحث", str(exc), top)
             return
-        if not products:
-            _message("warning", "غير موجود", "لم يتم العثور على منتج نشط بهذا الاسم أو الباركود أو SKU.", top)
+
+        if primary is None and not related:
+            _message("warning", "غير موجود", "لم يتم العثور على صنف مطابق أو أصناف قريبة من الاسم المدخل.", top)
             return
-        exact = [product for product in products if value == str(product[3] or "") or value == str(product[2] or "")]
-        choose_product(exact[:1] if exact else products)
+
+        show_product_search_dialog(primary, related)
 
     def change_selected_qty(delta: int):
         product_id = selected_product_id()
@@ -1004,6 +940,8 @@ def build_sell_ui(parent: QWidget, username: str):
             products_grid.setContentsMargins(0, 0, 0, 0)
             products_grid.setHorizontalSpacing(4)
             products_grid.setVerticalSpacing(4)
+            products_grid.setColumnStretch(0, 1)
+            products_grid.setColumnStretch(1, 1)
             for index, product in enumerate(products):
                 button_text = f"{compact_product_label(product)}\n{minor_to_money(product[4])}"
                 color = _valid_hex(product[11]) if len(product) > 11 else None
@@ -1011,17 +949,19 @@ def build_sell_ui(parent: QWidget, username: str):
                 hover = _shade(color, 0.85) if color else "#2c526a"
                 button = QPushButton(button_text, products_frame)
                 button.setCursor(Qt.PointingHandCursor)
-                button.setMinimumHeight(46)
+                button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+                button.setMinimumWidth(0)
+                button.setFixedHeight(46)
+                # Ignore text-based size hints so both grid columns receive equal widths.
+                button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 button.setFont(QFont("Segoe UI", 9))
                 button.setStyleSheet(
                     f"QPushButton {{ background: {foreground}; color: {_text_on(foreground)}; "
-                    f"border: 0; border-radius: 7px; padding: 4px; }}"
+                    f"border: 0; border-radius: 7px; padding: 4px; text-align: center; }}"
                     f"QPushButton:hover {{ background: {hover}; }}"
                 )
                 button.clicked.connect(lambda _checked=False, p=product: ask_product_quantity(p))
                 products_grid.addWidget(button, index // 2, index % 2)
-            products_grid.setColumnStretch(0, 1)
-            products_grid.setColumnStretch(1, 1)
             group_layout.addWidget(products_frame)
             quick_content_layout.addWidget(group_frame)
 

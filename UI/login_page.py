@@ -243,10 +243,107 @@ def show_login(root: QWidget) -> QWidget:
         "QPushButton:disabled { background-color: #8580df; color: #eeeeee; }"
     )
     card_layout.addWidget(login_button)
+    
+    login_hint = QLabel(f"PT\Saint Demiana", frame)
+    login_hint.setObjectName("loginHint")
+    login_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    login_hint.setStyleSheet(
+        """
+        QLabel#loginHint {
+            color: white;
+            background-color: rgba(79, 70, 229, 220);
+            border: none;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font: 12px 'Segoe UI';
+        }
+        """
+    )
+
+    card_layout.addSpacing(12)
+    card_layout.addWidget(login_hint, 0, Qt.AlignmentFlag.AlignHCenter)
+
+     # Transparent creator watermark container.
+    watermark_color = (
+        "rgba(255, 255, 255, 100)" if dark
+        else "rgba(16, 24, 32, 100)"
+    )
+
+    creator_container = QWidget(right)
+    creator_container.setObjectName("creatorContainer")
+    creator_container.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+    creator_container.setAttribute(
+        Qt.WidgetAttribute.WA_TranslucentBackground, True
+    )
+    creator_container.setFixedHeight(32)
+    creator_container.setStyleSheet(
+        "QWidget#creatorContainer { background: transparent; border: none; }"
+    )
+
+    creator_layout = QHBoxLayout(creator_container)
+    creator_layout.setContentsMargins(0, 0, 0, 0)
+    creator_layout.setSpacing(8)
+
+    # Left side: creator name.
+    creator_label = QLabel(f"Eng\Mina Maged", creator_container)
+    creator_label.setObjectName("creatorLabel")
+    creator_label.setAlignment(
+        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+    )
+    creator_label.setAttribute(
+        Qt.WidgetAttribute.WA_TranslucentBackground, True
+    )
+    creator_label.setStyleSheet(
+        f"""
+        QLabel#creatorLabel {{
+            background: transparent;
+            color: {watermark_color};
+            border: none;
+            font-family: 'Segoe UI';
+            font-size: 16px;
+            font-weight: 600;
+            padding: 2px 6px;
+        }}
+        """
+    )
+
+    # Right side: creator phone number.
+    phone_label = QLabel("01211474927", creator_container)
+    phone_label.setObjectName("phoneLabel")
+    phone_label.setAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    phone_label.setAttribute(
+        Qt.WidgetAttribute.WA_TranslucentBackground, True
+    )
+    phone_label.setStyleSheet(
+        f"""
+        QLabel#phoneLabel {{
+            background: transparent;
+            color: {watermark_color};
+            border: none;
+            font-family: 'Segoe UI';
+            font-size: 16px;
+            font-weight: 600;
+            padding: 2px 6px;
+        }}
+        """
+    )
+
+    creator_layout.addWidget(creator_label)
+    creator_layout.addStretch(1)
+    creator_layout.addWidget(phone_label)
+
 
     right_layout.addWidget(frame, 0, Qt.AlignmentFlag.AlignHCenter)
     right_layout.addStretch(1)
 
+    # Creator details stay at the bottom of the login panel.
+    right_layout.addWidget(
+        creator_container,
+        0,
+        Qt.AlignmentFlag.AlignBottom,
+    )
     # Keep the image and form proportions while retaining a usable form width.
     page_layout.addWidget(left, 3)
     page_layout.addWidget(right, 2)
@@ -265,6 +362,9 @@ def show_login(root: QWidget) -> QWidget:
 
     # Expose the controls on the page for predictable UI testing/integration.
     page.username_input = username_input
+    page.creator_label = creator_label
+    page.phone_label = phone_label
+    page.login_hint = login_hint
     page.password_input = password_input
     page.login_button = login_button
     page.background_label = background

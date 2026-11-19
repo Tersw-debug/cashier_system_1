@@ -14,6 +14,10 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
+from difflib import SequenceMatcher
+import re
+import unicodedata
+
 from Database.Schema import db
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -243,6 +247,210 @@ def get_cashier_context(user_id: int) -> dict[str, Any]:
         "currency_decimals": get_currency_decimals(),
     }
 
+
+
+def _normalize_cashier_product_text(value: Any) -> str:
+    """Normalize Arabic/English names for forgiving cashier product matching."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = text.translate(str.maketrans({
+        "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا",
+        "ى": "ي", "ؤ": "و", "ئ": "ي", "ة": "ه",
+    }))
+
+    normalized_chars: list[str] = []
+    for char in text:
+        # Remove Arabic diacritics and tatweel.
+        if "\u064b" <= char <= "\u065f" or char in {"\u0670", "\u0640"}:
+            continue
+        # Treat Arabic-Indic and Persian digits like their ASCII equivalents.
+        if char.isdigit():
+            try:
+                normalized_chars.append(str(unicodedata.digit(char)))
+                continue
+            except (TypeError, ValueError):
+                pass
+        normalized_chars.append(char)
+
+    text = "".join(normalized_chars)
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    return " ".join(text.split())
+
+
+def _cashier_product_name_score(query: str, product_name: str) -> float:
+    """Return a 0..1 score describing how well a name matches the query."""
+    query_norm = _normalize_cashier_product_text(query)
+    name_norm = _normalize_cashier_product_text(product_name)
+    if not query_norm or not name_norm:
+        return 0.0
+    if query_norm == name_norm:
+        return 1.0
+
+    # A full query contained in a product name is a strong partial match.
+    if len(query_norm) >= 3 and query_norm in name_norm:
+        return 0.96
+    if len(name_norm) >= 3 and name_norm in query_norm:
+        return 0.92
+
+    sequence_score = SequenceMatcher(None, query_norm, name_norm).ratio()
+    query_tokens = query_norm.split()
+    name_tokens = name_norm.split()
+    if not query_tokens or not name_tokens:
+        return sequence_score
+
+    # Match each query token against the closest token in the product name.
+    token_scores = [
+        max(SequenceMatcher(None, token, candidate).ratio() for candidate in name_tokens)
+        for token in query_tokens
+    ]
+    close_token_coverage = sum(score >= 0.72 for score in token_scores) / len(token_scores)
+    average_token_score = sum(token_scores) / len(token_scores)
+    return max(
+        sequence_score,
+        average_token_score * 0.88,
+        close_token_coverage * 0.90,
+    )
+
+
+def _cashier_product_relation_score(first_name: str, second_name: str) -> float:
+    """Measure how closely two product names are related to one another."""
+    first = _normalize_cashier_product_text(first_name)
+    second = _normalize_cashier_product_text(second_name)
+    if not first or not second:
+        return 0.0
+    if first == second:
+        return 1.0
+
+    sequence_score = SequenceMatcher(None, first, second).ratio()
+    first_tokens = set(first.split())
+    second_tokens = set(second.split())
+    if not first_tokens or not second_tokens:
+        return sequence_score
+
+    shared = first_tokens & second_tokens
+    if not shared:
+        # A modest character-level resemblance alone can connect unrelated
+        # Arabic words, so require a much stronger score when no word is shared.
+        return sequence_score if sequence_score >= 0.55 else 0.0
+
+    union = first_tokens | second_tokens
+    jaccard_score = len(shared) / len(union)
+    shorter_name_coverage = len(shared) / min(len(first_tokens), len(second_tokens))
+    return max(sequence_score, jaccard_score, shorter_name_coverage * 0.72)
+
+
+def search_cashier_products(
+    query: str,
+    warehouse_id: int | None = None,
+    *,
+    limit: int = 30,
+    primary_threshold: float = 0.72,
+    related_threshold: float = 0.34,
+) -> tuple[tuple | None, list[tuple]]:
+    """Find a confident closest product and products with similar names.
+
+    Returns:
+        (primary_product, related_products)
+
+    `primary_product` is None when the query does not identify one sufficiently
+    confident product. In that case, `related_products` contains the best
+    relevant name matches, which lets the UI display suggestions without
+    pretending that one result is the intended item.
+
+    Product tuples retain the exact column order returned by
+    get_cashier_products().
+
+    Note: get_cashier_products('', warehouse_id) currently returns up to 500
+    products. Exact/substring query matches are also merged in, so this search
+    includes direct matches beyond that catalogue window where possible.
+    """
+    query = str(query or "").strip()
+    if not query:
+        return None, []
+    if limit < 1:
+        return None, []
+
+    query_norm = _normalize_cashier_product_text(query)
+    if not query_norm:
+        return None, []
+
+    # Merge SQL's exact/substring hits with the available catalogue. The
+    # existing function remains the single source of product tuple structure.
+    candidates_by_id: dict[int, tuple] = {}
+    for product in get_cashier_products(query, warehouse_id):
+        candidates_by_id[int(product[0])] = product
+    for product in get_cashier_products("", warehouse_id):
+        candidates_by_id[int(product[0])] = product
+    candidates = list(candidates_by_id.values())
+    if not candidates:
+        return None, []
+
+    # Barcode and SKU exact matches should always outrank name similarity.
+    code_matches = [
+        product for product in candidates
+        if query_norm in {
+            _normalize_cashier_product_text(product[2] if len(product) > 2 else ""),
+            _normalize_cashier_product_text(product[3] if len(product) > 3 else ""),
+        }
+    ]
+    if code_matches:
+        # Prefer barcode over SKU when both happen to match.
+        code_matches.sort(
+            key=lambda product: (
+                _normalize_cashier_product_text(product[3] if len(product) > 3 else "") != query_norm,
+                str(product[1] or "").casefold(),
+            )
+        )
+        primary = code_matches[0]
+    else:
+        ranked = sorted(
+            (
+                (_cashier_product_name_score(query, str(product[1] or "")), product)
+                for product in candidates
+            ),
+            key=lambda item: (-item[0], str(item[1][1] or "").casefold(), int(item[1][0])),
+        )
+        best_score, best_product = ranked[0]
+        second_score = ranked[1][0] if len(ranked) > 1 else 0.0
+        exact_name = (
+            _normalize_cashier_product_text(best_product[1]) == query_norm
+        )
+        # For a fuzzy match, require either a strong score and a clear lead,
+        # or a single candidate. Ambiguous matches remain suggestions only.
+        confident = (
+            best_score >= primary_threshold
+            and (exact_name or len(ranked) == 1 or best_score - second_score >= 0.04)
+        )
+        primary = best_product if confident else None
+
+    if primary is not None:
+        anchor_name = str(primary[1] or "")
+        related_ranked = [
+            (_cashier_product_relation_score(anchor_name, str(product[1] or "")), product)
+            for product in candidates
+            if int(product[0]) != int(primary[0])
+        ]
+        related = [
+            product for score, product in sorted(
+                related_ranked,
+                key=lambda item: (-item[0], str(item[1][1] or "").casefold(), int(item[1][0])),
+            )
+            if score >= related_threshold
+        ][:limit]
+        return primary, related
+
+    # No unique/close primary item: return only the best relevant suggestions.
+    relevant_ranked = [
+        (_cashier_product_name_score(query, str(product[1] or "")), product)
+        for product in candidates
+    ]
+    relevant = [
+        product for score, product in sorted(
+            relevant_ranked,
+            key=lambda item: (-item[0], str(item[1][1] or "").casefold(), int(item[1][0])),
+        )
+        if score >= 0.30
+    ][:limit]
+    return None, relevant
 
 
 def get_cashier_products(
